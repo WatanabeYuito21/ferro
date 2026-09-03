@@ -14,11 +14,11 @@
 
 ## 現在の実装状況
 
-**まだ実装は始まっていない（`cargo init`直後の状態）。**
-現状の`src/main.rs`はHello Worldのみ、`Cargo.toml`は単一パッケージ構成で、
-下記「技術スタック方針」に書かれているワークスペース構成（`ferro-core`/`ferro-cli`/`src-tauri`）
-やPOP3クライアント・Maildir・Tantivy検索などは**未着手**。
-このファイルの以降の記述は実装済みの報告ではなく、これから実装していく設計方針・要件定義として読むこと。
+- `feature/workspace-setup`: Cargoワークスペース化（`ferro-core`=lib, `ferro-cli`=bin、バイナリ名`ferro`）完了。
+  中身はまだHello World相当のプレースホルダーのみ
+- `src-tauri`（Tauri/Svelteアプリ側の骨組み）は**未着手**。別ブランチで対応予定
+- POP3クライアント・Maildir・Tantivy検索・DBスキーマなどのロジックは**未着手**
+- このファイルの以降の記述は実装済みの報告ではなく、これから実装していく設計方針・要件定義として読むこと
 
 ## 要件
 
