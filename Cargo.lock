@@ -3,5 +3,12 @@
 version = 4
 
 [[package]]
-name = "ferro"
+name = "ferro-cli"
+version = "0.1.0"
+dependencies = [
+ "ferro-core",
+]
+
+[[package]]
+name = "ferro-core"
 version = "0.1.0"

@@ -1,6 +1,7 @@
-[package]
-name = "ferro"
+[workspace]
+resolver = "2"
+members = ["ferro-core", "ferro-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-
-[dependencies]
