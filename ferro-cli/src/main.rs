@@ -1,3 +1,5 @@
+mod bench;
+
 use clap::{Parser, Subcommand};
 use ferro_core::account_setup;
 use ferro_core::db::accounts::{self, NewAccount};
@@ -48,6 +50,10 @@ enum Command {
     },
     /// 全メッセージから検索インデックスを作り直す（DB/Maildirから再構築可能な派生キャッシュ）
     Reindex,
+    /// 開発用: 大量の合成メッセージでSQLite挿入/Tantivy索引/一覧/検索のスループット・
+    /// レイテンシを計測する。本番のDB/Maildir/検索インデックスには一切触れず、
+    /// $TMPDIR/ferro-bench配下に専用データを生成する
+    Bench { count: u64 },
 }
 
 #[derive(Subcommand)]
@@ -93,6 +99,7 @@ fn main() -> anyhow::Result<()> {
         } => run_list_command(&conn, account, before, limit)?,
         Command::Search { query, limit } => run_search_command(&conn, &search_index, &query, limit)?,
         Command::Reindex => run_reindex_command(&conn, &search_index)?,
+        Command::Bench { count } => bench::run(count)?,
     }
 
     Ok(())

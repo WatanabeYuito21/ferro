@@ -25,6 +25,8 @@ pub enum SearchError {
     Query(#[from] QueryParserError),
     #[error("search index writer lock was poisoned")]
     LockPoisoned,
+    #[error("search index writer is unavailable (a previous recovery attempt failed)")]
+    WriterUnavailable,
 }
 
 pub type Result<T> = std::result::Result<T, SearchError>;
@@ -56,8 +58,12 @@ pub struct IndexableMessage<'a> {
 }
 
 pub struct SearchIndex {
+    index: Index,
     reader: IndexReader,
-    writer: Mutex<IndexWriter>,
+    // Some(_)が通常状態。recover_writer中、古いwriterをdropして新しいwriterを
+    // 作り直す間だけ一時的にNoneになりうる（tantivyは1つのDirectoryにつき
+    // IndexWriterを同時に1つしか持てないため、drop前に新しいものは作れない）。
+    writer: Mutex<Option<IndexWriter>>,
     fields: Fields,
     query_parser: QueryParser,
 }
@@ -107,18 +113,40 @@ impl SearchIndex {
             QueryParser::for_index(&index, vec![fields.subject, fields.from, fields.body]);
 
         Ok(SearchIndex {
+            index,
             reader,
-            writer: Mutex::new(writer),
+            writer: Mutex::new(Some(writer)),
             fields,
             query_parser,
         })
+    }
+
+    /// `commit`が失敗した後の復旧用。Windows実機で断続的に観測される、
+    /// tantivyのマージ/GCワーカースレッドが異常終了して以後そのIndexWriterの
+    /// 全操作が失敗し続ける状態（`commit`のエラーメッセージに
+    /// "index writer was killed"のようなことが出る）から立て直すために、
+    /// 新しいIndexWriterを作り直して差し替える。
+    ///
+    /// tantivyは1つのDirectoryにつきIndexWriterを同時に1つしか持てない
+    /// （ロックファイルで強制される）ため、古いwriterを先にdropしてロックを
+    /// 解放してから新しいwriterを作らなければならない。順序を逆にすると
+    /// `LockFailure`で新規作成自体が失敗する。
+    ///
+    /// 直前のcommit未確定分のドキュメントはこの新しいwriterには引き継がれない
+    /// ため、呼び出し側は復旧後にそのバッチのindex_message/commitをやり直すこと。
+    fn recover_writer(&self) -> Result<()> {
+        let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+        *slot = None; // 古いwriterをここでdropし、ロックファイルを解放する
+        *slot = Some(self.index.writer(50_000_000)?);
+        Ok(())
     }
 
     /// メッセージを索引化する。既に同じidの文書があれば置き換える
     /// （tantivyには更新という概念がないため削除してから追加する）。
     /// 呼び出し側でバッチ単位に`commit`をまとめること。
     pub fn index_message(&self, message: &IndexableMessage) -> Result<()> {
-        let writer = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+        let slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+        let writer = slot.as_ref().ok_or(SearchError::WriterUnavailable)?;
         writer.delete_term(Term::from_field_u64(self.fields.id, message.id as u64));
         writer.add_document(doc!(
             self.fields.id => message.id as u64,
@@ -129,20 +157,48 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// commit失敗時、以後の呼び出しが復旧できるようwriterを作り直してから
+    /// (ベストエフォート。作り直し自体の失敗は無視する) 元のエラーを返す。
+    /// このバッチの未確定分は失われているため、呼び出し側は復旧後に
+    /// 同じ`index_message`群を再実行してから`commit`をやり直すこと。
     pub fn commit(&self) -> Result<()> {
-        let mut writer = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
-        writer.commit()?;
-        self.reader.reload()?;
-        Ok(())
+        let result = (|| -> Result<()> {
+            let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let writer = slot.as_mut().ok_or(SearchError::WriterUnavailable)?;
+            writer.commit()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.reader.reload()?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.recover_writer();
+                Err(e)
+            }
+        }
     }
 
     /// 全メッセージの索引を消す（`reindex_all`が最初に呼ぶ）。
     pub fn clear(&self) -> Result<()> {
-        let mut writer = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
-        writer.delete_all_documents()?;
-        writer.commit()?;
-        self.reader.reload()?;
-        Ok(())
+        let result = (|| -> Result<()> {
+            let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let writer = slot.as_mut().ok_or(SearchError::WriterUnavailable)?;
+            writer.delete_all_documents()?;
+            writer.commit()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.reader.reload()?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.recover_writer();
+                Err(e)
+            }
+        }
     }
 
     /// クエリにマッチする`messages.id`を関連度順で返す。
