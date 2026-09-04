@@ -12,8 +12,19 @@ use std::sync::Mutex;
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{QueryParser, QueryParserError};
-use tantivy::schema::{Field, INDEXED, STORED, Schema, TEXT, Value};
+use tantivy::schema::{
+    Field, INDEXED, IndexRecordOption, STORED, Schema, TextFieldIndexing, TextOptions, Value,
+};
+use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, TextAnalyzer};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term, doc};
+
+mod cjk_tokenizer;
+use cjk_tokenizer::CjkBigramTokenizer;
+
+/// このトークナイザ名でスキーマとインデックスの両方に登録する
+/// （`QueryParser`もクエリ文字列を索引投入時と同じトークナイザで分割するため、
+/// フィールドに設定した名前がインデックスの`TokenizerManager`に登録されている必要がある）。
+const TOKENIZER_NAME: &str = "ferro_cjk_bigram";
 
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {
@@ -38,14 +49,35 @@ struct Fields {
     body: Field,
 }
 
+/// 日本語（分かち書きしない言語）を含むテキスト用のフィールドオプション。
+/// 標準の"default"トークナイザ（空白・記号区切り）ではなく、
+/// `cjk_tokenizer`のCJKバイグラム＋英数字単語分割を使う。
+fn cjk_text_options(stored: bool) -> TextOptions {
+    let indexing = TextFieldIndexing::default()
+        .set_tokenizer(TOKENIZER_NAME)
+        .set_index_option(IndexRecordOption::WithFreqsAndPositions);
+    let options = TextOptions::default().set_indexing_options(indexing);
+    if stored { options.set_stored() } else { options }
+}
+
 fn build_schema() -> (Schema, Fields) {
     let mut builder = Schema::builder();
     let id = builder.add_u64_field("id", INDEXED | STORED);
-    let subject = builder.add_text_field("subject", TEXT | STORED);
-    let from = builder.add_text_field("from", TEXT | STORED);
-    let body = builder.add_text_field("body", TEXT);
+    let subject = builder.add_text_field("subject", cjk_text_options(true));
+    let from = builder.add_text_field("from", cjk_text_options(true));
+    let body = builder.add_text_field("body", cjk_text_options(false));
     let schema = builder.build();
     (schema, Fields { id, subject, from, body })
+}
+
+fn register_tokenizer(index: &Index) {
+    index.tokenizers().register(
+        TOKENIZER_NAME,
+        TextAnalyzer::builder(CjkBigramTokenizer)
+            .filter(RemoveLongFilter::limit(40))
+            .filter(LowerCaser)
+            .build(),
+    );
 }
 
 /// 新規/更新するメッセージの索引化対象データ。
@@ -100,6 +132,7 @@ impl SearchIndex {
     }
 
     fn from_index(index: Index, fields: Fields) -> Result<SearchIndex> {
+        register_tokenizer(&index);
         let writer: IndexWriter = index.writer(50_000_000)?;
         // OnCommitWithDelayは別スレッドでの非同期リロードなので、commit直後に
         // searchしても反映されているとは限らない。呼び出し側がcommit()の都度
