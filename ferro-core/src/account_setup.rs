@@ -8,9 +8,14 @@
 //! 不安定になったり、開発者の実際の資格情報ストアを汚したりする。
 //! db::accounts側のCRUD自体は既にテスト済み。
 
+use std::path::Path;
+
 use crate::credentials;
 use crate::db::Connection;
 use crate::db::accounts::{self, Account, NewAccount};
+use crate::db::messages;
+use crate::maildir;
+use crate::search::{SearchError, SearchIndex};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CreateAccountError {
@@ -18,6 +23,14 @@ pub enum CreateAccountError {
     Db(#[from] rusqlite::Error),
     #[error(transparent)]
     Keyring(#[from] keyring::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RemoveAccountError {
+    #[error(transparent)]
+    Db(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Search(#[from] SearchError),
 }
 
 /// アカウントを作成し、パスワードをOS keyringに保存する。
@@ -40,9 +53,33 @@ pub fn create(
     Ok(accounts::get(conn, id)?.expect("just-inserted account must exist"))
 }
 
-/// アカウント行とkeyring上のパスワードを両方削除する。
+/// アカウント行、そのアカウントの全メッセージ（DB行・Maildirファイル・検索インデックス）、
+/// keyring上のパスワードをまとめて削除する。
+///
+/// `messages.account_id`は`accounts.id`への外部キー参照だが`ON DELETE CASCADE`は
+/// 付けていないため、メッセージが1件でも残っていると`accounts::delete`は
+/// 外部キー制約違反で失敗する（`db::accounts`のテスト参照）。そのため必ず
+/// メッセージ側を先に消してからアカウント行を消す。
+///
 /// keyring側の削除失敗（既に無い等）はベストエフォートとして無視する。
-pub fn remove(conn: &Connection, account_id: i64) -> rusqlite::Result<()> {
+pub fn remove(
+    conn: &Connection,
+    maildir_base: &Path,
+    search_index: &SearchIndex,
+    account_id: i64,
+) -> Result<(), RemoveAccountError> {
+    let account_messages = messages::list_all_for_account(conn, account_id)?;
+    for message in &account_messages {
+        // Maildirファイルが既に無い場合等はベストエフォートで無視する
+        // （DB/検索インデックスからの削除ほど致命的ではないため）。
+        let _ = maildir::remove(maildir_base, account_id, &message.uidl);
+        search_index.delete_message(message.id)?;
+    }
+    if !account_messages.is_empty() {
+        search_index.commit()?;
+    }
+
+    messages::delete_all_for_account(conn, account_id)?;
     accounts::delete(conn, account_id)?;
     let _ = credentials::delete_password(account_id);
     Ok(())

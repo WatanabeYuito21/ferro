@@ -104,6 +104,25 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Message>> {
     .optional()
 }
 
+/// アカウント削除時、Maildir/検索インデックスのクリーンアップに使うため
+/// そのアカウントの全メッセージ（`is_deleted`に関わらず）を一覧する。
+pub fn list_all_for_account(conn: &Connection, account_id: i64) -> rusqlite::Result<Vec<Message>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
+                date_header, size_bytes, is_read, is_flagged, is_deleted
+         FROM messages WHERE account_id = ?1",
+    )?;
+    stmt.query_map([account_id], row_to_message)?.collect()
+}
+
+/// アカウントの全メッセージ行を削除する。`accounts`への外部キー参照が
+/// (`ON DELETE CASCADE`を付けていないため)残っていると`db::accounts::delete`が
+/// 失敗するので、アカウント削除の前に呼ぶ（`account_setup::remove`参照）。
+pub fn delete_all_for_account(conn: &Connection, account_id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM messages WHERE account_id = ?1", [account_id])?;
+    Ok(())
+}
+
 /// idの昇順で全件を漏れなく舐めるためのページネーション（全文検索インデックスの
 /// 再構築専用）。`list_recent`のdate_headerカーソルは値が重複しうるため
 /// 境界で取りこぼす可能性があるが、`id`は一意なのでこちらは完全に漏れなく辿れる。

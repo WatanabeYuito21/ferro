@@ -47,6 +47,16 @@ pub fn exists(base_dir: &Path, account_id: i64, uidl: &str) -> bool {
     message_path(base_dir, account_id, uidl).is_file()
 }
 
+/// 保存済みメッセージを削除する（アカウント削除時のクリーンアップ用）。
+/// 既に無い場合も成功扱いにする（削除したい状態には既になっているため）。
+pub fn remove(base_dir: &Path, account_id: i64, uidl: &str) -> io::Result<()> {
+    match fs::remove_file(message_path(base_dir, account_id, uidl)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// UIDLはPOP3仕様上ほぼ安全な文字集合(印字可能ASCIIかつ空白なし)だが、
 /// ファイル名として不安全になりうる文字（パス区切りやWindowsの予約文字など）を
 /// 念のため`%XX`にエスケープする。ファイル名からuidlへ戻す必要はない
@@ -137,6 +147,20 @@ mod tests {
         assert!(!filename.contains('/') && !filename.contains('\\'));
 
         assert_eq!(load(base, 1, nasty_uidl).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn remove_deletes_the_file_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let base = dir.path();
+        store(base, 1, "u1", b"body").unwrap();
+        assert!(exists(base, 1, "u1"));
+
+        remove(base, 1, "u1").unwrap();
+        assert!(!exists(base, 1, "u1"));
+
+        // 既に無い状態でもう一度呼んでもエラーにならない。
+        remove(base, 1, "u1").unwrap();
     }
 
     #[test]
