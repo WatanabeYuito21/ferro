@@ -14,6 +14,15 @@
   let formError = ''
   let submitting = false
 
+  let searchQuery = ''
+  // null = 検索していない（通常のMessageList表示）。配列なら検索結果表示に切り替える。
+  let searchResults = null
+  let searchError = ''
+  let searching = false
+
+  let reindexStatus = ''
+  let reindexing = false
+
   async function refreshAccounts() {
     accounts = await invoke('list_accounts')
   }
@@ -76,6 +85,39 @@
       syncStatus = { ...syncStatus, [accountId]: `error: ${e}` }
     }
   }
+
+  async function runSearch() {
+    if (!searchQuery.trim()) return
+    searching = true
+    searchError = ''
+    try {
+      searchResults = await invoke('search_messages', { query: searchQuery, limit: 50 })
+    } catch (e) {
+      searchError = String(e)
+      searchResults = []
+    } finally {
+      searching = false
+    }
+  }
+
+  function clearSearch() {
+    searchQuery = ''
+    searchResults = null
+    searchError = ''
+  }
+
+  async function runReindex() {
+    reindexing = true
+    reindexStatus = 'rebuilding…'
+    try {
+      const count = await invoke('reindex_all')
+      reindexStatus = `reindexed ${count} message(s)`
+    } catch (e) {
+      reindexStatus = `error: ${e}`
+    } finally {
+      reindexing = false
+    }
+  }
 </script>
 
 <main>
@@ -126,9 +168,41 @@
 
   <section>
     <h2>Messages</h2>
-    {#key messageListRefreshToken}
-      <MessageList accountId={null} />
-    {/key}
+
+    <form class="search-bar" on:submit|preventDefault={runSearch}>
+      <input placeholder="Search subject/from/body…" bind:value={searchQuery} />
+      <button type="submit" disabled={searching || !searchQuery.trim()}>Search</button>
+      {#if searchResults !== null}
+        <button type="button" on:click={clearSearch}>Clear</button>
+      {/if}
+      <button type="button" on:click={runReindex} disabled={reindexing}>
+        Rebuild search index
+      </button>
+      {#if reindexStatus}
+        <span class="status">{reindexStatus}</span>
+      {/if}
+    </form>
+    {#if searchError}
+      <p class="error">{searchError}</p>
+    {/if}
+
+    {#if searchResults !== null}
+      <ul class="search-results">
+        {#if searchResults.length === 0 && !searching}
+          <li class="empty">No matches.</li>
+        {/if}
+        {#each searchResults as message (message.id)}
+          <li>
+            <span class="from">{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
+            <span class="subject">{message.subject ?? '(no subject)'}</span>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      {#key messageListRefreshToken}
+        <MessageList accountId={null} />
+      {/key}
+    {/if}
   </section>
 </main>
 
@@ -152,5 +226,43 @@
     margin-left: 0.5rem;
     color: #555;
     font-size: 0.9em;
+  }
+  .search-bar {
+    margin-bottom: 0.75rem;
+  }
+  .search-bar input {
+    flex: 1 1 auto;
+    min-width: 200px;
+  }
+  .search-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    max-height: 420px;
+    overflow-y: auto;
+  }
+  .search-results li {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.4rem 0.5rem;
+    border-bottom: 1px solid #eee;
+  }
+  .search-results li.empty {
+    color: #666;
+  }
+  .search-results .from {
+    flex: 0 0 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .search-results .subject {
+    flex: 1 1 auto;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
