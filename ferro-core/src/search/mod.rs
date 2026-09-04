@@ -190,6 +190,15 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// メッセージを索引から取り除く（削除時用。再追加はしない）。
+    /// `index_message`同様、呼び出し側で`commit`すること。
+    pub fn delete_message(&self, id: i64) -> Result<()> {
+        let slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+        let writer = slot.as_ref().ok_or(SearchError::WriterUnavailable)?;
+        writer.delete_term(Term::from_field_u64(self.fields.id, id as u64));
+        Ok(())
+    }
+
     /// commit失敗時、以後の呼び出しが復旧できるようwriterを作り直してから
     /// (ベストエフォート。作り直し自体の失敗は無視する) 元のエラーを返す。
     /// このバッチの未確定分は失われているため、呼び出し側は復旧後に

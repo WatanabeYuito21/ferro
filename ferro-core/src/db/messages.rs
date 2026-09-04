@@ -65,6 +65,34 @@ pub fn exists_by_uidl(conn: &Connection, account_id: i64, uidl: &str) -> rusqlit
     .map(|found| found.is_some())
 }
 
+pub fn set_read(conn: &Connection, id: i64, is_read: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE messages SET is_read = ?1 WHERE id = ?2",
+        params![is_read, id],
+    )?;
+    Ok(())
+}
+
+pub fn set_flagged(conn: &Connection, id: i64, is_flagged: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE messages SET is_flagged = ?1 WHERE id = ?2",
+        params![is_flagged, id],
+    )?;
+    Ok(())
+}
+
+/// ソフトデリート。POP3サーバー側のDELEとは独立したローカルの削除フラグを立てる/戻す。
+/// `is_deleted=1`にすると`list_recent`/`list_all_for_reindex`から即座に外れる。
+/// 検索インデックス側からも取り除きたい場合は`message_actions::set_deleted`を使うこと
+/// （このDB単体の関数は検索インデックスには一切触れない）。
+pub fn set_deleted(conn: &Connection, id: i64, is_deleted: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE messages SET is_deleted = ?1 WHERE id = ?2",
+        params![is_deleted, id],
+    )?;
+    Ok(())
+}
+
 pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Message>> {
     conn.query_row(
         "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
@@ -212,6 +240,50 @@ mod tests {
         let found = get(&conn, id).unwrap().expect("message should exist");
         assert_eq!(found.uidl, "u1");
         assert!(get(&conn, id + 1000).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_read_set_flagged_set_deleted_update_only_the_target_row() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        insert_msg(&conn, account_id, "u1", 100);
+        insert_msg(&conn, account_id, "u2", 200);
+        let ids: Vec<i64> = list_recent(&conn, Some(account_id), None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        let (id1, id2) = (ids[0], ids[1]);
+
+        set_read(&conn, id1, true).unwrap();
+        set_flagged(&conn, id1, true).unwrap();
+        let m1 = get(&conn, id1).unwrap().unwrap();
+        assert!(m1.is_read);
+        assert!(m1.is_flagged);
+
+        let m2 = get(&conn, id2).unwrap().unwrap();
+        assert!(!m2.is_read);
+        assert!(!m2.is_flagged);
+
+        set_deleted(&conn, id1, true).unwrap();
+        assert!(get(&conn, id1).unwrap().unwrap().is_deleted);
+        assert_eq!(
+            list_recent(&conn, Some(account_id), None, 10)
+                .unwrap()
+                .len(),
+            1,
+            "soft-deleted message should be excluded from list_recent"
+        );
+
+        set_deleted(&conn, id1, false).unwrap();
+        assert!(!get(&conn, id1).unwrap().unwrap().is_deleted);
+        assert_eq!(
+            list_recent(&conn, Some(account_id), None, 10)
+                .unwrap()
+                .len(),
+            2,
+            "restoring should bring it back into list_recent"
+        );
     }
 
     /// `list_recent`のdate_headerカーソルは値が重複すると境界で取りこぼしうるが、

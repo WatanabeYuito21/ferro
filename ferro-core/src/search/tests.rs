@@ -95,6 +95,24 @@ fn reindexing_same_id_replaces_previous_document() {
 }
 
 #[test]
+fn delete_message_removes_only_the_target_document() {
+    let index = SearchIndex::create_in_ram().unwrap();
+    index
+        .index_message(&sample(1, "keep me", "a a@example.com", "body"))
+        .unwrap();
+    index
+        .index_message(&sample(2, "delete me", "b b@example.com", "body"))
+        .unwrap();
+    index.commit().unwrap();
+
+    index.delete_message(2).unwrap();
+    index.commit().unwrap();
+
+    assert_eq!(index.search("keep", 10).unwrap(), vec![1]);
+    assert!(index.search("delete", 10).unwrap().is_empty());
+}
+
+#[test]
 fn clear_removes_all_documents() {
     let index = SearchIndex::create_in_ram().unwrap();
     index

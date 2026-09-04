@@ -85,12 +85,14 @@
       {#each visibleItems as message (message.id)}
         <div
           class="row"
+          class:unread={!message.is_read}
           style="height: {ROW_HEIGHT}px"
           role="button"
           tabindex="0"
           onclick={() => onSelect(message.id)}
           onkeydown={(e) => e.key === 'Enter' && onSelect(message.id)}
         >
+          <span class="flag">{message.is_flagged ? '★' : ''}</span>
           <span class="from" title={message.from_addr ?? ''}>
             {message.from_name ?? message.from_addr ?? '(unknown sender)'}
           </span>
@@ -142,6 +144,10 @@
   .row:hover {
     background: #f5f5f5;
   }
+  .flag {
+    flex: 0 0 1em;
+    color: #d4a017;
+  }
   .from {
     flex: 0 0 200px;
     overflow: hidden;
@@ -150,10 +156,14 @@
   }
   .subject {
     flex: 1 1 auto;
-    font-weight: 600;
+    font-weight: 400;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .row.unread .subject,
+  .row.unread .from {
+    font-weight: 700;
   }
   .date {
     flex: 0 0 auto;

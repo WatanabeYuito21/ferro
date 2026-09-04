@@ -54,6 +54,27 @@ enum Command {
     /// レイテンシを計測する。本番のDB/Maildir/検索インデックスには一切触れず、
     /// $TMPDIR/ferro-bench配下に専用データを生成する
     Bench { count: u64 },
+    /// 既読/未読を設定する
+    Read {
+        message_id: i64,
+        /// 指定すると未読に戻す（省略時は既読にする）
+        #[arg(long)]
+        unread: bool,
+    },
+    /// フラグを立てる/外す
+    Flag {
+        message_id: i64,
+        /// 指定するとフラグを外す（省略時は立てる）
+        #[arg(long)]
+        off: bool,
+    },
+    /// 論理削除する/復元する（POP3サーバー側のDELEとは独立したローカルの削除フラグ）
+    Delete {
+        message_id: i64,
+        /// 指定すると復元する（省略時は削除する）
+        #[arg(long)]
+        restore: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -100,6 +121,18 @@ fn main() -> anyhow::Result<()> {
         Command::Search { query, limit } => run_search_command(&conn, &search_index, &query, limit)?,
         Command::Reindex => run_reindex_command(&conn, &search_index)?,
         Command::Bench { count } => bench::run(count)?,
+        Command::Read { message_id, unread } => {
+            messages::set_read(&conn, message_id, !unread)?;
+            println!("message #{message_id} marked as {}.", if unread { "unread" } else { "read" });
+        }
+        Command::Flag { message_id, off } => {
+            messages::set_flagged(&conn, message_id, !off)?;
+            println!("message #{message_id} flag {}.", if off { "removed" } else { "set" });
+        }
+        Command::Delete { message_id, restore } => {
+            ferro_core::message_actions::set_deleted(&conn, &search_index, message_id, !restore)?;
+            println!("message #{message_id} {}.", if restore { "restored" } else { "deleted" });
+        }
     }
 
     Ok(())
@@ -204,15 +237,21 @@ fn run_search_command(
         let Some(message) = messages::get(conn, id)? else {
             continue;
         };
-        println!(
-            "#{:<6} {:<30} {:<40} {}",
-            message.id,
-            message.from_addr.as_deref().unwrap_or("(unknown sender)"),
-            message.subject.as_deref().unwrap_or("(no subject)"),
-            message.date_header,
-        );
+        println!("{}", format_message_line(&message));
     }
     Ok(())
+}
+
+fn format_message_line(message: &messages::Message) -> String {
+    format!(
+        "#{:<6} {} {} {:<30} {:<40} {}",
+        message.id,
+        if message.is_read { " " } else { "N" },
+        if message.is_flagged { "*" } else { " " },
+        message.from_addr.as_deref().unwrap_or("(unknown sender)"),
+        message.subject.as_deref().unwrap_or("(no subject)"),
+        message.date_header,
+    )
 }
 
 fn run_reindex_command(
@@ -231,13 +270,7 @@ fn run_list_command(
     limit: u32,
 ) -> anyhow::Result<()> {
     for message in messages::list_recent(conn, account, before, limit)? {
-        println!(
-            "#{:<6} {:<30} {:<40} {}",
-            message.id,
-            message.from_addr.as_deref().unwrap_or("(unknown sender)"),
-            message.subject.as_deref().unwrap_or("(no subject)"),
-            message.date_header,
-        );
+        println!("{}", format_message_line(&message));
     }
     Ok(())
 }
