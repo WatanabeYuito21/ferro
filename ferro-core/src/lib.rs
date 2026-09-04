@@ -2,4 +2,5 @@
 //! ferro-cli と src-tauri から共有される。
 
 pub mod db;
+pub mod maildir;
 pub mod pop3;
