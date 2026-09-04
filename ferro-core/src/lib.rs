@@ -8,4 +8,6 @@ pub mod mail;
 pub mod maildir;
 pub mod paths;
 pub mod pop3;
+pub mod reindex;
+pub mod search;
 pub mod sync;

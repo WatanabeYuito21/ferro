@@ -5,9 +5,10 @@ use rusqlite::Connection;
 use crate::db::accounts::Account;
 use crate::db::messages::{self, NewMessage};
 use crate::db::now_unix;
-use crate::mail::parse::parse_headers;
+use crate::mail::parse::parse_full;
 use crate::maildir;
 use crate::pop3::{Pop3Client, Pop3Error};
+use crate::search::{IndexableMessage, SearchError, SearchIndex};
 
 /// RETRをまとめて送ってから順に読む単位。実サーバーで大きすぎると
 /// 切断されることがあるため、CLAUDE.mdの実測に基づき20件に固定している。
@@ -25,6 +26,8 @@ pub enum SyncError {
     Db(#[from] rusqlite::Error),
     #[error("failed to store message on disk: {0}")]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Search(#[from] SearchError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +44,7 @@ pub struct SyncSummary {
 /// `limit`件まで（Noneなら無制限）。パイプライン化したRETR中に実サーバーが
 /// 接続を切断することがあるため、その場合は再接続して続きから再開する
 /// （UIDL差分方式のため、既に保存済みのメッセージは再取得されず安全）。
+#[allow(clippy::too_many_arguments)]
 pub fn sync_account_with_limit(
     conn: &Connection,
     maildir_base: &Path,
@@ -48,6 +52,7 @@ pub fn sync_account_with_limit(
     password: &str,
     allow_plaintext: bool,
     limit: Option<u32>,
+    search_index: &SearchIndex,
 ) -> Result<SyncSummary, SyncError> {
     let mut total_fetched = 0u32;
     let mut budget = limit;
@@ -80,8 +85,14 @@ pub fn sync_account_with_limit(
         }
 
         let take = budget.map_or(pending.len(), |b| (b as usize).min(pending.len()));
-        let (fetched_now, session_broken) =
-            fetch_and_store(conn, maildir_base, &mut client, account.id, &pending[..take])?;
+        let (fetched_now, session_broken) = fetch_and_store(
+            conn,
+            maildir_base,
+            &mut client,
+            account.id,
+            &pending[..take],
+            search_index,
+        )?;
         let _ = client.quit();
 
         total_fetched += fetched_now;
@@ -120,6 +131,7 @@ fn fetch_and_store(
     client: &mut Pop3Client,
     account_id: i64,
     items: &[(u32, String)],
+    search_index: &SearchIndex,
 ) -> Result<(u32, bool), SyncError> {
     let mut fetched = 0u32;
 
@@ -132,11 +144,15 @@ fn fetch_and_store(
         };
 
         let tx = conn.unchecked_transaction()?;
+        let mut indexed_in_batch = false;
         for ((_, uidl), result) in batch.iter().zip(results) {
             let raw = match result {
                 Ok(raw) => raw,
                 Err(e) if is_disconnect(&e) => {
                     tx.commit()?;
+                    if indexed_in_batch {
+                        search_index.commit()?;
+                    }
                     return Ok((fetched, true));
                 }
                 Err(e) => return Err(e.into()),
@@ -144,24 +160,42 @@ fn fetch_and_store(
 
             maildir::store(maildir_base, account_id, uidl, &raw)?;
 
-            let headers = parse_headers(&raw);
-            messages::insert_new(
+            let parsed = parse_full(&raw);
+            let new_id = messages::insert_new(
                 &tx,
                 &NewMessage {
                     account_id,
                     uidl,
-                    message_id_header: headers.message_id.as_deref(),
-                    subject: headers.subject.as_deref(),
-                    from_name: headers.from_name.as_deref(),
-                    from_addr: headers.from_addr.as_deref(),
-                    to_addr: headers.to_addr.as_deref(),
-                    date_header: headers.date_header.unwrap_or_else(now_unix),
+                    message_id_header: parsed.headers.message_id.as_deref(),
+                    subject: parsed.headers.subject.as_deref(),
+                    from_name: parsed.headers.from_name.as_deref(),
+                    from_addr: parsed.headers.from_addr.as_deref(),
+                    to_addr: parsed.headers.to_addr.as_deref(),
+                    date_header: parsed.headers.date_header.unwrap_or_else(now_unix),
                     size_bytes: raw.len() as i64,
                 },
             )?;
+
+            if let Some(id) = new_id {
+                let from = format!(
+                    "{} {}",
+                    parsed.headers.from_name.as_deref().unwrap_or(""),
+                    parsed.headers.from_addr.as_deref().unwrap_or("")
+                );
+                search_index.index_message(&IndexableMessage {
+                    id,
+                    subject: parsed.headers.subject.as_deref().unwrap_or(""),
+                    from: &from,
+                    body: parsed.body.as_deref().unwrap_or(""),
+                })?;
+                indexed_in_batch = true;
+            }
             fetched += 1;
         }
         tx.commit()?;
+        if indexed_in_batch {
+            search_index.commit()?;
+        }
     }
 
     Ok((fetched, false))

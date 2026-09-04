@@ -65,6 +65,37 @@ pub fn exists_by_uidl(conn: &Connection, account_id: i64, uidl: &str) -> rusqlit
     .map(|found| found.is_some())
 }
 
+pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Message>> {
+    conn.query_row(
+        "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
+                date_header, size_bytes, is_read, is_flagged, is_deleted
+         FROM messages WHERE id = ?1",
+        [id],
+        row_to_message,
+    )
+    .optional()
+}
+
+/// idの昇順で全件を漏れなく舐めるためのページネーション（全文検索インデックスの
+/// 再構築専用）。`list_recent`のdate_headerカーソルは値が重複しうるため
+/// 境界で取りこぼす可能性があるが、`id`は一意なのでこちらは完全に漏れなく辿れる。
+pub fn list_all_for_reindex(
+    conn: &Connection,
+    after_id: i64,
+    limit: u32,
+) -> rusqlite::Result<Vec<Message>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
+                date_header, size_bytes, is_read, is_flagged, is_deleted
+         FROM messages
+         WHERE is_deleted = 0 AND id > ?1
+         ORDER BY id ASC
+         LIMIT ?2",
+    )?;
+    stmt.query_map(params![after_id, limit], row_to_message)?
+        .collect()
+}
+
 /// キーセットページネーションで新着順（date_header降順）に一覧取得する。
 ///
 /// `account_id`がNoneなら全アカウント横断。`before`を指定すると、そのdate_headerより
@@ -167,6 +198,48 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn get_returns_message_or_none() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        insert_msg(&conn, account_id, "u1", 100);
+
+        let all = list_recent(&conn, Some(account_id), None, 10).unwrap();
+        let id = all[0].id;
+
+        let found = get(&conn, id).unwrap().expect("message should exist");
+        assert_eq!(found.uidl, "u1");
+        assert!(get(&conn, id + 1000).unwrap().is_none());
+    }
+
+    /// `list_recent`のdate_headerカーソルは値が重複すると境界で取りこぼしうるが、
+    /// idベースのこちらは重複date_headerがあっても全件を漏れなく辿れることを確認する。
+    #[test]
+    fn list_all_for_reindex_visits_every_row_exactly_once_even_with_duplicate_dates() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        for i in 0..25 {
+            // 全メッセージが同じdate_headerを持つ、意図的な最悪ケース。
+            insert_msg(&conn, account_id, &format!("u{i}"), 1000);
+        }
+
+        let mut seen = Vec::new();
+        let mut after_id = 0i64;
+        loop {
+            let page = list_all_for_reindex(&conn, after_id, 10).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            after_id = page.last().unwrap().id;
+            seen.extend(page.into_iter().map(|m| m.uidl));
+        }
+
+        seen.sort();
+        let mut expected: Vec<String> = (0..25).map(|i| format!("u{i}")).collect();
+        expected.sort();
+        assert_eq!(seen, expected);
     }
 
     #[test]

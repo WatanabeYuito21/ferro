@@ -2,7 +2,8 @@ use clap::{Parser, Subcommand};
 use ferro_core::account_setup;
 use ferro_core::db::accounts::{self, NewAccount};
 use ferro_core::db::messages;
-use ferro_core::{credentials, paths, sync};
+use ferro_core::search::SearchIndex;
+use ferro_core::{credentials, paths, reindex, sync};
 
 #[derive(Parser)]
 #[command(name = "ferro", about = "1000万件規模でも高速に動くPOP3メーラー(CLI)")]
@@ -39,6 +40,14 @@ enum Command {
         #[arg(long)]
         before: Option<i64>,
     },
+    /// 全文検索インデックスを検索する
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// 全メッセージから検索インデックスを作り直す（DB/Maildirから再構築可能な派生キャッシュ）
+    Reindex,
 }
 
 #[derive(Subcommand)]
@@ -68,6 +77,7 @@ fn main() -> anyhow::Result<()> {
 
     std::fs::create_dir_all(paths::app_data_dir())?;
     let conn = ferro_core::db::open(&paths::db_path())?;
+    let search_index = SearchIndex::open_or_create(&paths::search_index_dir())?;
 
     match cli.command {
         Command::Account { action } => run_account_command(&conn, action)?,
@@ -75,12 +85,14 @@ fn main() -> anyhow::Result<()> {
             account_id,
             limit,
             allow_plaintext,
-        } => run_sync_command(&conn, account_id, limit, allow_plaintext)?,
+        } => run_sync_command(&conn, &search_index, account_id, limit, allow_plaintext)?,
         Command::List {
             account,
             limit,
             before,
         } => run_list_command(&conn, account, before, limit)?,
+        Command::Search { query, limit } => run_search_command(&conn, &search_index, &query, limit)?,
+        Command::Reindex => run_reindex_command(&conn, &search_index)?,
     }
 
     Ok(())
@@ -138,6 +150,7 @@ fn run_account_command(conn: &ferro_core::db::Connection, action: AccountAction)
 
 fn run_sync_command(
     conn: &ferro_core::db::Connection,
+    search_index: &SearchIndex,
     account_id: i64,
     limit: Option<u32>,
     allow_plaintext: bool,
@@ -158,6 +171,7 @@ fn run_sync_command(
         &password,
         allow_plaintext,
         limit,
+        search_index,
     )?;
 
     println!(
@@ -170,6 +184,36 @@ fn run_sync_command(
             ""
         }
     );
+    Ok(())
+}
+
+fn run_search_command(
+    conn: &ferro_core::db::Connection,
+    search_index: &SearchIndex,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<()> {
+    for id in search_index.search(query, limit)? {
+        let Some(message) = messages::get(conn, id)? else {
+            continue;
+        };
+        println!(
+            "#{:<6} {:<30} {:<40} {}",
+            message.id,
+            message.from_addr.as_deref().unwrap_or("(unknown sender)"),
+            message.subject.as_deref().unwrap_or("(no subject)"),
+            message.date_header,
+        );
+    }
+    Ok(())
+}
+
+fn run_reindex_command(
+    conn: &ferro_core::db::Connection,
+    search_index: &SearchIndex,
+) -> anyhow::Result<()> {
+    let count = reindex::reindex_all(conn, &paths::maildir_dir(), search_index)?;
+    println!("reindexed {count} message(s).");
     Ok(())
 }
 

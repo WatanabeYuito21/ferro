@@ -7,6 +7,11 @@ use tempfile::tempdir;
 use super::*;
 use crate::db::accounts::{self, NewAccount};
 use crate::db::{messages, open_in_memory};
+use crate::search::SearchIndex;
+
+fn make_search_index() -> SearchIndex {
+    SearchIndex::create_in_ram().unwrap()
+}
 
 struct FakeMessage {
     uidl: &'static str,
@@ -95,6 +100,7 @@ fn make_account(conn: &Connection, port: u16) -> Account {
 fn sync_respects_limit_and_resumes_next_call() {
     let conn = open_in_memory().unwrap();
     let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
 
     let fake_messages = vec![
         FakeMessage {
@@ -113,9 +119,16 @@ fn sync_respects_limit_and_resumes_next_call() {
     let port = spawn_server(fake_messages);
     let account = make_account(&conn, port);
 
-    let summary =
-        sync_account_with_limit(&conn, maildir_base.path(), &account, "pw", true, Some(2))
-            .unwrap();
+    let summary = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        Some(2),
+        &search_index,
+    )
+    .unwrap();
     assert_eq!(
         summary,
         SyncSummary {
@@ -133,9 +146,20 @@ fn sync_respects_limit_and_resumes_next_call() {
     let one = stored.iter().find(|m| m.uidl == "u1").unwrap();
     assert_eq!(one.subject.as_deref(), Some("one"));
 
+    // syncで取り込んだメッセージが検索インデックスにも入っていることを確認する。
+    assert_eq!(search_index.search("one", 10).unwrap(), vec![one.id]);
+
     // 残りは次回のsync呼び出しで拾われる。
-    let summary2 =
-        sync_account_with_limit(&conn, maildir_base.path(), &account, "pw", true, None).unwrap();
+    let summary2 = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+    )
+    .unwrap();
     assert_eq!(
         summary2,
         SyncSummary {
@@ -145,12 +169,21 @@ fn sync_respects_limit_and_resumes_next_call() {
         }
     );
     assert!(maildir::exists(maildir_base.path(), account.id, "u3"));
+
+    let three_id = messages::list_recent(&conn, Some(account.id), None, 10)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.uidl == "u3")
+        .unwrap()
+        .id;
+    assert_eq!(search_index.search("three", 10).unwrap(), vec![three_id]);
 }
 
 #[test]
 fn sync_is_idempotent_when_nothing_new() {
     let conn = open_in_memory().unwrap();
     let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
 
     let port = spawn_server(vec![FakeMessage {
         uidl: "u1",
@@ -158,9 +191,26 @@ fn sync_is_idempotent_when_nothing_new() {
     }]);
     let account = make_account(&conn, port);
 
-    sync_account_with_limit(&conn, maildir_base.path(), &account, "pw", true, None).unwrap();
-    let summary =
-        sync_account_with_limit(&conn, maildir_base.path(), &account, "pw", true, None).unwrap();
+    sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+    )
+    .unwrap();
+    let summary = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+    )
+    .unwrap();
     assert_eq!(
         summary,
         SyncSummary {
@@ -178,6 +228,7 @@ fn sync_is_idempotent_when_nothing_new() {
 fn sync_reconnects_after_mid_pipeline_disconnect() {
     let conn = open_in_memory().unwrap();
     let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
 
     let fake_messages = vec![
         FakeMessage {
@@ -193,8 +244,16 @@ fn sync_reconnects_after_mid_pipeline_disconnect() {
     let port = spawn_server_with_drop(fake_messages, Some(2));
     let account = make_account(&conn, port);
 
-    let summary =
-        sync_account_with_limit(&conn, maildir_base.path(), &account, "pw", true, None).unwrap();
+    let summary = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+    )
+    .unwrap();
 
     assert_eq!(summary.fetched, 2);
     assert_eq!(summary.remaining, 0);
