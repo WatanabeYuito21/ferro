@@ -1,6 +1,7 @@
 <script>
   import { invoke } from '@tauri-apps/api/core'
-  import { onMount } from 'svelte'
+  import { listen } from '@tauri-apps/api/event'
+  import { onDestroy, onMount } from 'svelte'
   import MessageList from './lib/MessageList.svelte'
   import MessageDetail from './lib/MessageDetail.svelte'
 
@@ -30,12 +31,36 @@
     accounts = await invoke('list_accounts')
   }
 
+  let unlistenBackgroundSync
+
   onMount(async () => {
     try {
       await refreshAccounts()
     } catch (e) {
       error = String(e)
     }
+
+    // バックグラウンド定期同期（src-tauri側のspawn_background_sync）の結果を
+    // 手動Syncボタンと同じステータス表示に反映する。
+    unlistenBackgroundSync = await listen('background-sync', (event) => {
+      const { account_id, fetched, remaining, ended_early, error: syncError } = event.payload
+      if (syncError) {
+        syncStatus = { ...syncStatus, [account_id]: `background sync error: ${syncError}` }
+        return
+      }
+      const extra = ended_early ? ' (stopped early after repeated disconnects)' : ''
+      syncStatus = {
+        ...syncStatus,
+        [account_id]: `background sync: fetched ${fetched}, ${remaining} remaining${extra}`,
+      }
+      if (fetched > 0) {
+        messageListRefreshToken += 1
+      }
+    })
+  })
+
+  onDestroy(() => {
+    unlistenBackgroundSync?.()
   })
 
   async function addAccount() {
