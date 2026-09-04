@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::Duration;
 
 use ferro_core::account_setup;
 use ferro_core::credentials;
@@ -11,7 +12,13 @@ use ferro_core::search::SearchIndex;
 use ferro_core::sync::SyncSummary;
 use ferro_core::{maildir, paths, reindex, sync};
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// 自動バックグラウンド同期の間隔。設定画面はまだ無いのでハードコードしている。
+const BACKGROUND_SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// 1アカウントあたり1回の自動同期で取得する上限（バックログが多いアカウントでも
+/// 1サイクルで固まらないように）。残りは次のサイクルで拾われる。
+const BACKGROUND_SYNC_LIMIT: u32 = 200;
 
 /// CLIとGUIが同じDBファイル(`ferro_core::paths::db_path`)を共有するため、
 /// スキーマやクエリロジックはすべてferro-core側にあり、ここは薄いコマンド層のみ。
@@ -72,7 +79,7 @@ impl From<Message> for MessageView {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct SyncSummaryView {
     fetched: u32,
     remaining: u32,
@@ -298,6 +305,81 @@ fn reindex_all(state: State<AppState>) -> Result<usize, String> {
     reindex::reindex_all(&conn, &paths::maildir_dir(), &state.search_index).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize, Clone)]
+struct BackgroundSyncEvent {
+    account_id: i64,
+    #[serde(flatten)]
+    summary: Option<SyncSummaryView>,
+    error: Option<String>,
+}
+
+/// バックグラウンド定期同期のループ本体。専用のOSスレッドで動かす
+/// （ferro-coreの同期処理は同期(ブロッキング)関数なので、tokioワーカースレッドを
+/// 塞がないよう素のstd::threadを使う）。
+///
+/// `allow_plaintext`は常にfalseで呼ぶ: ユーザーが手動でSyncボタンを押した
+/// わけではない自動実行で、平文接続の暗黙的な選択はしない
+/// （`use_tls=false`のアカウントは自動同期の対象外になり、手動同期のみ届く）。
+fn spawn_background_sync(app_handle: AppHandle) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(BACKGROUND_SYNC_INTERVAL);
+            run_background_sync_once(&app_handle);
+        }
+    });
+}
+
+fn run_background_sync_once(app_handle: &AppHandle) {
+    let state = app_handle.state::<AppState>();
+
+    let accounts = {
+        let Ok(conn) = state.conn.lock() else {
+            return;
+        };
+        match db::accounts::list(&conn) {
+            Ok(accounts) => accounts,
+            Err(_) => return,
+        }
+    };
+
+    for account in accounts {
+        let event = match credentials::get_password(account.id) {
+            Err(e) => BackgroundSyncEvent {
+                account_id: account.id,
+                summary: None,
+                error: Some(format!("failed to read password from OS keyring: {e}")),
+            },
+            Ok(password) => {
+                let Ok(conn) = state.conn.lock() else {
+                    return;
+                };
+                let result = sync::sync_account_with_limit(
+                    &conn,
+                    &paths::maildir_dir(),
+                    &account,
+                    &password,
+                    false,
+                    Some(BACKGROUND_SYNC_LIMIT),
+                    &state.search_index,
+                );
+                match result {
+                    Ok(summary) => BackgroundSyncEvent {
+                        account_id: account.id,
+                        summary: Some(SyncSummaryView::from(summary)),
+                        error: None,
+                    },
+                    Err(e) => BackgroundSyncEvent {
+                        account_id: account.id,
+                        summary: None,
+                        error: Some(e.to_string()),
+                    },
+                }
+            }
+        };
+        let _ = app_handle.emit("background-sync", event);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     std::fs::create_dir_all(paths::app_data_dir()).expect("failed to create app data directory");
@@ -310,6 +392,10 @@ pub fn run() {
         .manage(AppState {
             conn: Mutex::new(conn),
             search_index,
+        })
+        .setup(|app| {
+            spawn_background_sync(app.handle().clone());
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_accounts,
