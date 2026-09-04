@@ -16,3 +16,7 @@ pub fn db_path() -> PathBuf {
 pub fn maildir_dir() -> PathBuf {
     app_data_dir().join("maildir")
 }
+
+pub fn search_index_dir() -> PathBuf {
+    app_data_dir().join("search_index")
+}

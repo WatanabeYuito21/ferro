@@ -9,6 +9,7 @@ keyring = "4.2.0"
 mail-parser = { version = "0.11.8", default-features = false, features = ["full_encoding"] }
 native-tls = "0.2.18"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+tantivy = "0.26.1"
 thiserror = "2.0.20"
 
 [dev-dependencies]
