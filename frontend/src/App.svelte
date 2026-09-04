@@ -213,6 +213,7 @@
       <MessageDetail
         messageId={selectedMessageId}
         onClose={() => (selectedMessageId = null)}
+        onChanged={() => (messageListRefreshToken += 1)}
       />
     {/if}
   </section>

@@ -116,6 +116,8 @@ struct MessageDetailView {
     from_addr: Option<String>,
     to_addr: Option<String>,
     date_header: i64,
+    is_read: bool,
+    is_flagged: bool,
     body: Option<String>,
     attachments: Vec<AttachmentView>,
 }
@@ -145,12 +147,35 @@ fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<Message
         from_addr: message.from_addr,
         to_addr: message.to_addr,
         date_header: message.date_header,
+        is_read: message.is_read,
+        is_flagged: message.is_flagged,
         body: extract_plain_text_body(&raw),
         attachments: attachments::list_attachments(&raw)
             .into_iter()
             .map(AttachmentView::from)
             .collect(),
     })
+}
+
+#[tauri::command]
+fn set_read(state: State<AppState>, message_id: i64, is_read: bool) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    db::messages::set_read(&conn, message_id, is_read).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_flagged(state: State<AppState>, message_id: i64, is_flagged: bool) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    db::messages::set_flagged(&conn, message_id, is_flagged).map_err(|e| e.to_string())
+}
+
+/// 論理削除する/復元する（POP3サーバー側のDELEとは独立したローカルの削除フラグ）。
+/// 削除時は検索インデックスからも取り除く（`ferro_core::message_actions::set_deleted`参照）。
+#[tauri::command]
+fn set_deleted(state: State<AppState>, message_id: i64, is_deleted: bool) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    ferro_core::message_actions::set_deleted(&conn, &state.search_index, message_id, is_deleted)
+        .map_err(|e| e.to_string())
 }
 
 /// `get_message_detail`が返した添付の`index`を指定して、フロント側が
@@ -295,7 +320,10 @@ pub fn run() {
             search_messages,
             reindex_all,
             get_message_detail,
-            save_attachment
+            save_attachment,
+            set_read,
+            set_flagged,
+            set_deleted
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Ferro desktop app");

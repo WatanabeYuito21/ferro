@@ -6,6 +6,7 @@ pub mod credentials;
 pub mod db;
 pub mod mail;
 pub mod maildir;
+pub mod message_actions;
 pub mod paths;
 pub mod pop3;
 pub mod reindex;

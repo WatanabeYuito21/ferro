@@ -6,11 +6,13 @@
   import { invoke } from '@tauri-apps/api/core'
   import { save } from '@tauri-apps/plugin-dialog'
 
-  let { messageId, onClose = () => {} } = $props()
+  let { messageId, onClose = () => {}, onChanged = () => {} } = $props()
 
   let detail = $state(null)
   let error = $state('')
   let saveStatus = $state({})
+  let flagging = $state(false)
+  let deleting = $state(false)
 
   $effect(() => {
     const id = messageId
@@ -18,13 +20,51 @@
     error = ''
     saveStatus = {}
     invoke('get_message_detail', { messageId: id })
-      .then((d) => {
+      .then(async (d) => {
         detail = d
+        // 開いたら既読にする（一般的なメールクライアントの挙動に合わせる）。
+        // 一覧側の表示更新はここでは強制しない（開くたびに一覧を作り直すと
+        // スクロール位置が毎回リセットされて煩わしいため。次の自然な再読み込み
+        // ―― 同期完了時など ―― で追いつく）。
+        if (!d.is_read) {
+          try {
+            await invoke('set_read', { messageId: id, isRead: true })
+            detail = { ...detail, is_read: true }
+          } catch {
+            // 既読化の失敗は表示自体を妨げるものではないので無視する。
+          }
+        }
       })
       .catch((e) => {
         error = String(e)
       })
   })
+
+  async function toggleFlag() {
+    if (!detail) return
+    flagging = true
+    try {
+      const next = !detail.is_flagged
+      await invoke('set_flagged', { messageId, isFlagged: next })
+      detail = { ...detail, is_flagged: next }
+    } catch (e) {
+      error = String(e)
+    } finally {
+      flagging = false
+    }
+  }
+
+  async function deleteMessage() {
+    deleting = true
+    try {
+      await invoke('set_deleted', { messageId, isDeleted: true })
+      onChanged()
+      onClose()
+    } catch (e) {
+      error = String(e)
+      deleting = false
+    }
+  }
 
   function formatDate(unixSeconds) {
     return new Date(unixSeconds * 1000).toLocaleString()
@@ -64,6 +104,13 @@
   {:else if detail === null}
     <p>Loading…</p>
   {:else}
+    <div class="toolbar">
+      <button type="button" onclick={toggleFlag} disabled={flagging}>
+        {detail.is_flagged ? 'Unflag' : 'Flag'}
+      </button>
+      <button type="button" onclick={deleteMessage} disabled={deleting}>Delete</button>
+    </div>
+
     <h3>{detail.subject ?? '(no subject)'}</h3>
     <dl>
       <dt>From</dt>
@@ -105,6 +152,11 @@
   }
   .close {
     float: right;
+  }
+  .toolbar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
   }
   dl {
     display: grid;
