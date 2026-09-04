@@ -1,9 +1,10 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use ferro_core::account_config::{self, AccountConfig};
 use ferro_core::account_setup;
 use ferro_core::credentials;
-use ferro_core::db::accounts::{Account, NewAccount};
+use ferro_core::db::accounts::Account;
 use ferro_core::db::messages::Message;
 use ferro_core::db::{self, Connection};
 use ferro_core::mail::attachments::{self, AttachmentInfo};
@@ -224,6 +225,8 @@ fn list_messages(
         .map_err(|e| e.to_string())
 }
 
+/// アカウントを追加する: `accounts.toml`にエントリを追記してからDBに反映し、
+/// パスワードをOS keyringに保存する（`account_setup::add`参照）。
 #[tauri::command]
 fn add_account(
     state: State<AppState>,
@@ -235,14 +238,14 @@ fn add_account(
     password: String,
 ) -> Result<AccountView, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let new_account = NewAccount {
-        name: &name,
-        host: &host,
+    let new_account = AccountConfig {
+        name,
+        host,
         port,
-        username: &username,
+        username,
         use_tls,
     };
-    account_setup::create(&conn, &new_account, &password)
+    account_setup::add(&conn, &paths::accounts_config_path(), &new_account, &password)
         .map(AccountView::from)
         .map_err(|e| e.to_string())
 }
@@ -250,8 +253,30 @@ fn add_account(
 #[tauri::command]
 fn remove_account(state: State<AppState>, account_id: i64) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    account_setup::remove(&conn, &paths::maildir_dir(), &state.search_index, account_id)
+    account_setup::remove(
+        &conn,
+        &paths::maildir_dir(),
+        &state.search_index,
+        &paths::accounts_config_path(),
+        account_id,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// `accounts.toml`を読み直してDBに反映する。アプリ起動中に手でファイルを
+/// 編集した場合に使う（他は起動時に一度だけ自動で反映する）。
+#[tauri::command]
+fn reload_accounts_config(state: State<AppState>) -> Result<Vec<AccountView>, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    account_config::load_and_reconcile(&conn, &paths::accounts_config_path())
+        .map(|accounts| accounts.into_iter().map(AccountView::from).collect())
         .map_err(|e| e.to_string())
+}
+
+/// フロント側で「設定ファイルはここにあります」と案内表示するためのパス。
+#[tauri::command]
+fn accounts_config_path() -> String {
+    paths::accounts_config_path().display().to_string()
 }
 
 /// アカウントを同期する。ネットワークI/Oを伴うため呼び出し中は他のコマンドが
@@ -388,6 +413,14 @@ pub fn run() {
     let search_index =
         SearchIndex::open_or_create(&paths::search_index_dir()).expect("failed to open search index");
 
+    // accounts.tomlが正の情報源。存在すれば起動時にDBへ反映する（無ければ空扱い）。
+    // 手編集ファイルの構文ミス等でここが失敗してもGUI自体は起動させる
+    // （直近の反映結果＝DBの内容のまま起動し、修正後は`reload_accounts_config`
+    // か再起動で反映される）。
+    if let Err(e) = account_config::load_and_reconcile(&conn, &paths::accounts_config_path()) {
+        eprintln!("warning: failed to load/reconcile accounts.toml: {e}");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
@@ -410,7 +443,9 @@ pub fn run() {
             save_attachment,
             set_read,
             set_flagged,
-            set_deleted
+            set_deleted,
+            reload_accounts_config,
+            accounts_config_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Ferro desktop app");

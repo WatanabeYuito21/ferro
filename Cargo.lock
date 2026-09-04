@@ -1364,9 +1364,11 @@ dependencies = [
  "mail-parser",
  "native-tls",
  "rusqlite",
+ "serde",
  "tantivy",
  "tempfile",
  "thiserror 2.0.20",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]

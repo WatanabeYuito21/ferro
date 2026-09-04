@@ -8,10 +8,16 @@ struct Migration {
 /// バージョン番号順に並んだ全マイグレーション。
 /// 新しいマイグレーションを追加するときは末尾に足すだけでよく、
 /// 既存のSQLファイルは変更しない（スキーマ変更は新しいファイルを追加する）。
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: include_str!("../../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("../../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        sql: include_str!("../../migrations/0002_accounts_name_unique.sql"),
+    },
+];
 
 /// 未適用のマイグレーションを`schema_migrations`テーブルの記録に基づいて適用する。
 /// 何度呼んでも安全（適用済みバージョンはスキップされる）。

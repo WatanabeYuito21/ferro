@@ -57,6 +57,35 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Account>> {
     stmt.query_map([], row_to_account)?.collect()
 }
 
+/// `accounts.toml`との照合用。`name`には一意インデックスがあるので高々1件。
+pub fn find_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<Account>> {
+    conn.query_row(
+        "SELECT id, name, host, port, username, use_tls, created_at
+         FROM accounts WHERE name = ?1",
+        [name],
+        row_to_account,
+    )
+    .optional()
+}
+
+/// 設定ファイルとの照合（`account_config::reconcile`）で、既存アカウントの
+/// 接続設定を上書きするために使う。`id`/`name`/`created_at`は変えない
+/// （`id`を変えないことでkeyring/messages/Maildirとの紐付けを保つ）。
+pub fn update_settings(
+    conn: &Connection,
+    id: i64,
+    host: &str,
+    port: u16,
+    username: &str,
+    use_tls: bool,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE accounts SET host = ?1, port = ?2, username = ?3, use_tls = ?4 WHERE id = ?5",
+        params![host, port, username, use_tls, id],
+    )?;
+    Ok(())
+}
+
 /// アカウント行を削除する。主にkeyringへのパスワード保存失敗時のロールバック用
 /// （アカウント行だけ先にコミットされ、認証情報のない中途半端な状態が残るのを防ぐ）。
 pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
@@ -107,6 +136,63 @@ mod tests {
 
         assert_eq!(list(&conn).unwrap(), vec![account]);
         assert!(get(&conn, id + 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn names_must_be_unique() {
+        let conn = open_in_memory().unwrap();
+        insert(
+            &conn,
+            &NewAccount {
+                name: "Work",
+                host: "pop.example.com",
+                port: 995,
+                username: "alice",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+
+        let result = insert(
+            &conn,
+            &NewAccount {
+                name: "Work",
+                host: "other.example.com",
+                port: 110,
+                username: "bob",
+                use_tls: false,
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn find_by_name_and_update_settings() {
+        let conn = open_in_memory().unwrap();
+        let id = insert(
+            &conn,
+            &NewAccount {
+                name: "Work",
+                host: "pop.example.com",
+                port: 995,
+                username: "alice",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+
+        let found = find_by_name(&conn, "Work").unwrap().expect("should find it");
+        assert_eq!(found.id, id);
+        assert!(find_by_name(&conn, "Nope").unwrap().is_none());
+
+        update_settings(&conn, id, "new-host.example.com", 110, "alice2", false).unwrap();
+        let updated = get(&conn, id).unwrap().unwrap();
+        assert_eq!(updated.id, id, "id must not change");
+        assert_eq!(updated.name, "Work", "name must not change");
+        assert_eq!(updated.host, "new-host.example.com");
+        assert_eq!(updated.port, 110);
+        assert_eq!(updated.username, "alice2");
+        assert!(!updated.use_tls);
     }
 
     /// accountsとmessagesの間には`ON DELETE CASCADE`を付けていない（FK参照）ため、
