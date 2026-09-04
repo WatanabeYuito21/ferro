@@ -1,11 +1,14 @@
 <script>
   import { invoke } from '@tauri-apps/api/core'
   import { onMount } from 'svelte'
+  import MessageList from './lib/MessageList.svelte'
 
   let accounts = []
-  let messages = []
   let error = ''
   let syncStatus = {}
+  // MessageListの`{#key}`に渡し、値が変わるたびにコンポーネントを
+  // 作り直させることで、syncで増えたメッセージを最初のページから読み直させる。
+  let messageListRefreshToken = 0
 
   let form = { name: '', host: '', port: 995, username: '', useTls: true, password: '' }
   let formError = ''
@@ -15,14 +18,9 @@
     accounts = await invoke('list_accounts')
   }
 
-  async function refreshMessages() {
-    messages = await invoke('list_messages', { accountId: null, before: null, limit: 20 })
-  }
-
   onMount(async () => {
     try {
       await refreshAccounts()
-      await refreshMessages()
     } catch (e) {
       error = String(e)
     }
@@ -73,7 +71,7 @@
         ...syncStatus,
         [accountId]: `fetched ${summary.fetched}, ${summary.remaining} remaining${extra}`,
       }
-      await refreshMessages()
+      messageListRefreshToken += 1
     } catch (e) {
       syncStatus = { ...syncStatus, [accountId]: `error: ${e}` }
     }
@@ -127,16 +125,10 @@
   </section>
 
   <section>
-    <h2>Recent messages ({messages.length})</h2>
-    {#if messages.length === 0}
-      <p>No messages yet.</p>
-    {:else}
-      <ul>
-        {#each messages as message (message.id)}
-          <li>{message.subject ?? '(no subject)'} — {message.from_addr ?? '(unknown sender)'}</li>
-        {/each}
-      </ul>
-    {/if}
+    <h2>Messages</h2>
+    {#key messageListRefreshToken}
+      <MessageList accountId={null} />
+    {/key}
   </section>
 </main>
 
