@@ -19,6 +19,12 @@ pub enum Pop3Error {
 
     #[error("malformed response from server: {0}")]
     Protocol(String),
+
+    /// サーバーが応答を書かずにコネクションを閉じた。実サーバーではRETRを
+    /// パイプライン化した際にこれが起きることがあるため、sync側はこれを
+    /// 「セッションが切れた、再接続して続きから再開すべき」信号として扱う。
+    #[error("connection closed by server")]
+    ConnectionClosed,
 }
 
 pub type Result<T> = std::result::Result<T, Pop3Error>;

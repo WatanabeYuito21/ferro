@@ -95,7 +95,7 @@ impl Pop3Client {
         let mut line = String::new();
         let n = self.reader.read_line(&mut line)?;
         if n == 0 {
-            return Err(Pop3Error::Protocol("connection closed by server".into()));
+            return Err(Pop3Error::ConnectionClosed);
         }
         while line.ends_with('\n') || line.ends_with('\r') {
             line.pop();
