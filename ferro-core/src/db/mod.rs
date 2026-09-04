@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::Connection;
+pub use rusqlite::Connection;
 
 pub mod accounts;
 mod migrate;
