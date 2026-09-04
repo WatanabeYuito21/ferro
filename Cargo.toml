@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["ferro-core", "ferro-cli"]
+members = ["ferro-core", "ferro-cli", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
