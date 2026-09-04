@@ -1,6 +1,7 @@
 //! ferro-core: POP3/DB/Maildir/検索ロジックのライブラリ。
 //! ferro-cli と src-tauri から共有される。
 
+pub mod account_setup;
 pub mod credentials;
 pub mod db;
 pub mod mail;

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use ferro_core::account_setup;
 use ferro_core::db::accounts::{self, NewAccount};
 use ferro_core::db::messages;
 use ferro_core::{credentials, paths, sync};
@@ -94,29 +95,25 @@ fn run_account_command(conn: &ferro_core::db::Connection, action: AccountAction)
             username,
             use_tls,
         } => {
-            let id = accounts::insert(
-                conn,
-                &NewAccount {
-                    name: &name,
-                    host: &host,
-                    port,
-                    username: &username,
-                    use_tls,
-                },
-            )?;
-
             let password = rpassword::prompt_password("Password: ")?;
-            if let Err(e) = credentials::set_password(id, &password) {
-                // keyring保存に失敗した状態でアカウント行だけ残ると、認証情報のない
-                // 壊れたレコードになる(過去に実際に踏んだ罠)。失敗時はロールバックする。
-                let _ = accounts::delete(conn, id);
-                anyhow::bail!(
-                    "failed to save the password to the OS keyring: {e}\n\
-                     account was not created. See CLAUDE.md's keyring troubleshooting notes."
-                );
-            }
+            let new_account = NewAccount {
+                name: &name,
+                host: &host,
+                port,
+                username: &username,
+                use_tls,
+            };
+            let account = account_setup::create(conn, &new_account, &password).map_err(|e| {
+                match e {
+                    account_setup::CreateAccountError::Keyring(inner) => anyhow::anyhow!(
+                        "failed to save the password to the OS keyring: {inner}\n\
+                         account was not created. See CLAUDE.md's keyring troubleshooting notes."
+                    ),
+                    other => anyhow::anyhow!(other),
+                }
+            })?;
 
-            println!("account #{id} ({name}) created.");
+            println!("account #{} ({}) created.", account.id, account.name);
         }
         AccountAction::List => {
             for account in accounts::list(conn)? {
@@ -132,8 +129,7 @@ fn run_account_command(conn: &ferro_core::db::Connection, action: AccountAction)
             }
         }
         AccountAction::Remove { account_id } => {
-            accounts::delete(conn, account_id)?;
-            let _ = credentials::delete_password(account_id);
+            account_setup::remove(conn, account_id)?;
             println!("account #{account_id} removed.");
         }
     }
