@@ -5,9 +5,11 @@ use ferro_core::credentials;
 use ferro_core::db::accounts::{Account, NewAccount};
 use ferro_core::db::messages::Message;
 use ferro_core::db::{self, Connection};
+use ferro_core::mail::attachments::{self, AttachmentInfo};
+use ferro_core::mail::parse::extract_plain_text_body;
 use ferro_core::search::SearchIndex;
 use ferro_core::sync::SyncSummary;
-use ferro_core::{paths, reindex, sync};
+use ferro_core::{maildir, paths, reindex, sync};
 use serde::Serialize;
 use tauri::State;
 
@@ -85,6 +87,86 @@ impl From<SyncSummary> for SyncSummaryView {
             ended_early: s.ended_early,
         }
     }
+}
+
+#[derive(Serialize)]
+struct AttachmentView {
+    index: usize,
+    filename: Option<String>,
+    content_type: Option<String>,
+    size: usize,
+}
+
+impl From<AttachmentInfo> for AttachmentView {
+    fn from(a: AttachmentInfo) -> Self {
+        AttachmentView {
+            index: a.index,
+            filename: a.filename,
+            content_type: a.content_type,
+            size: a.size,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct MessageDetailView {
+    id: i64,
+    subject: Option<String>,
+    from_name: Option<String>,
+    from_addr: Option<String>,
+    to_addr: Option<String>,
+    date_header: i64,
+    body: Option<String>,
+    attachments: Vec<AttachmentView>,
+}
+
+/// メッセージのDB行とMaildir上の生バイト列を両方取ってくる。
+/// メッセージ詳細表示・添付保存の両方で必要になる共通の下ごしらえ。
+fn load_message_and_raw(conn: &Connection, message_id: i64) -> Result<(Message, Vec<u8>), String> {
+    let message = db::messages::get(conn, message_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("message #{message_id} not found"))?;
+    let raw = maildir::load(&paths::maildir_dir(), message.account_id, &message.uidl)
+        .map_err(|e| e.to_string())?;
+    Ok((message, raw))
+}
+
+/// 本文（プレーンテキストのみ。HTML本文はタグを剥がしたテキストに変換済み）と
+/// 添付ファイルの一覧を返す。添付の中身はここでは返さず`save_attachment`で個別に取得する。
+#[tauri::command]
+fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<MessageDetailView, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let (message, raw) = load_message_and_raw(&conn, message_id)?;
+
+    Ok(MessageDetailView {
+        id: message.id,
+        subject: message.subject,
+        from_name: message.from_name,
+        from_addr: message.from_addr,
+        to_addr: message.to_addr,
+        date_header: message.date_header,
+        body: extract_plain_text_body(&raw),
+        attachments: attachments::list_attachments(&raw)
+            .into_iter()
+            .map(AttachmentView::from)
+            .collect(),
+    })
+}
+
+/// `get_message_detail`が返した添付の`index`を指定して、フロント側が
+/// (`@tauri-apps/plugin-dialog`の保存ダイアログで選んだ)`destination_path`に書き出す。
+#[tauri::command]
+fn save_attachment(
+    state: State<AppState>,
+    message_id: i64,
+    attachment_index: usize,
+    destination_path: String,
+) -> Result<(), String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let (_message, raw) = load_message_and_raw(&conn, message_id)?;
+    let bytes = attachments::extract_attachment_bytes(&raw, attachment_index)
+        .ok_or_else(|| format!("attachment #{attachment_index} not found"))?;
+    std::fs::write(&destination_path, bytes).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -199,6 +281,7 @@ pub fn run() {
         SearchIndex::open_or_create(&paths::search_index_dir()).expect("failed to open search index");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             conn: Mutex::new(conn),
             search_index,
@@ -210,7 +293,9 @@ pub fn run() {
             remove_account,
             sync_account,
             search_messages,
-            reindex_all
+            reindex_all,
+            get_message_detail,
+            save_attachment
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Ferro desktop app");

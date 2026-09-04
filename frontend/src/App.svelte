@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { onMount } from 'svelte'
   import MessageList from './lib/MessageList.svelte'
+  import MessageDetail from './lib/MessageDetail.svelte'
 
   let accounts = []
   let error = ''
@@ -22,6 +23,8 @@
 
   let reindexStatus = ''
   let reindexing = false
+
+  let selectedMessageId = null
 
   async function refreshAccounts() {
     accounts = await invoke('list_accounts')
@@ -193,15 +196,24 @@
         {/if}
         {#each searchResults as message (message.id)}
           <li>
-            <span class="from">{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
-            <span class="subject">{message.subject ?? '(no subject)'}</span>
+            <button type="button" class="result-row" on:click={() => (selectedMessageId = message.id)}>
+              <span class="from">{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
+              <span class="subject">{message.subject ?? '(no subject)'}</span>
+            </button>
           </li>
         {/each}
       </ul>
     {:else}
       {#key messageListRefreshToken}
-        <MessageList accountId={null} />
+        <MessageList accountId={null} onSelect={(id) => (selectedMessageId = id)} />
       {/key}
+    {/if}
+
+    {#if selectedMessageId !== null}
+      <MessageDetail
+        messageId={selectedMessageId}
+        onClose={() => (selectedMessageId = null)}
+      />
     {/if}
   </section>
 </main>
@@ -244,13 +256,25 @@
     overflow-y: auto;
   }
   .search-results li {
-    display: flex;
-    gap: 0.75rem;
-    padding: 0.4rem 0.5rem;
     border-bottom: 1px solid #eee;
   }
   .search-results li.empty {
+    padding: 0.4rem 0.5rem;
     color: #666;
+  }
+  .result-row {
+    display: flex;
+    width: 100%;
+    gap: 0.75rem;
+    padding: 0.4rem 0.5rem;
+    border: none;
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .result-row:hover {
+    background: #f5f5f5;
   }
   .search-results .from {
     flex: 0 0 200px;

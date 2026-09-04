@@ -4,7 +4,7 @@
   // 1000万件規模でもDOMには可視範囲分の行しか描画しない。
   import { invoke } from '@tauri-apps/api/core'
 
-  let { accountId = null } = $props()
+  let { accountId = null, onSelect = () => {} } = $props()
 
   const ROW_HEIGHT = 28
   const OVERSCAN_ROWS = 5
@@ -83,7 +83,14 @@
   <div class="spacer" style="height: {totalHeight}px">
     <div class="window" style="transform: translateY({topOffset}px)">
       {#each visibleItems as message (message.id)}
-        <div class="row" style="height: {ROW_HEIGHT}px">
+        <div
+          class="row"
+          style="height: {ROW_HEIGHT}px"
+          role="button"
+          tabindex="0"
+          onclick={() => onSelect(message.id)}
+          onkeydown={(e) => e.key === 'Enter' && onSelect(message.id)}
+        >
           <span class="from" title={message.from_addr ?? ''}>
             {message.from_name ?? message.from_addr ?? '(unknown sender)'}
           </span>
@@ -130,6 +137,10 @@
     border-bottom: 1px solid #eee;
     box-sizing: border-box;
     overflow: hidden;
+    cursor: pointer;
+  }
+  .row:hover {
+    background: #f5f5f5;
   }
   .from {
     flex: 0 0 200px;
