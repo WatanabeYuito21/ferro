@@ -1,1 +1,10 @@
 /target
+
+# frontend (Svelte/Vite)
+frontend/node_modules
+frontend/dist
+
+# generated Tauri gitignore additions
+src-tauri/target
+src-tauri/gen
+
