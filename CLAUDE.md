@@ -25,7 +25,11 @@
   スループット/レイテンシ計測、`$TMPDIR/ferro-bench`に専用データを生成し本番データには触れない）
 - `src-tauri` + `frontend`（Svelte）: アカウント管理、同期、メッセージ一覧（自前仮想スクロール）、
   全文検索、メッセージ詳細表示（本文プレーンテキスト・添付一覧・保存ダイアログ）
-- 未着手/既知の課題: Windowsパッケージング仕上げ、下記のTantivy/Windows信頼性の既知の問題
+- Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
+  `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
+  tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`
+  （実測: MSI約7.7MB、NSIS約4.5MB。Electron系との比較で軽量という当初方針どおり）
+- 未着手/既知の課題: 下記のTantivy/Windows信頼性の既知の問題
 
 ## 要件
 
