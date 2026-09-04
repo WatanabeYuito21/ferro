@@ -250,7 +250,8 @@ fn add_account(
 #[tauri::command]
 fn remove_account(state: State<AppState>, account_id: i64) -> Result<(), String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    account_setup::remove(&conn, account_id).map_err(|e| e.to_string())
+    account_setup::remove(&conn, &paths::maildir_dir(), &state.search_index, account_id)
+        .map_err(|e| e.to_string())
 }
 
 /// アカウントを同期する。ネットワークI/Oを伴うため呼び出し中は他のコマンドが

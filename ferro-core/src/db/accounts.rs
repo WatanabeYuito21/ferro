@@ -79,6 +79,7 @@ fn row_to_account(row: &Row) -> rusqlite::Result<Account> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::messages::{self, NewMessage};
     use crate::db::open_in_memory;
 
     #[test]
@@ -106,5 +107,43 @@ mod tests {
 
         assert_eq!(list(&conn).unwrap(), vec![account]);
         assert!(get(&conn, id + 1).unwrap().is_none());
+    }
+
+    /// accountsとmessagesの間には`ON DELETE CASCADE`を付けていない（FK参照）ため、
+    /// メッセージが1件でもあるアカウントは`delete`単体では消せない。
+    /// 呼び出し側（`account_setup::remove`）が先にそのアカウントのメッセージを
+    /// 消す責務を負うことを、この失敗自体で明示しておく。
+    #[test]
+    fn delete_fails_with_foreign_key_violation_when_messages_still_reference_the_account() {
+        let conn = open_in_memory().unwrap();
+        let account_id = insert(
+            &conn,
+            &NewAccount {
+                name: "Work",
+                host: "pop.example.com",
+                port: 995,
+                username: "alice",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+        messages::insert_new(
+            &conn,
+            &NewMessage {
+                account_id,
+                uidl: "u1",
+                message_id_header: None,
+                subject: None,
+                from_name: None,
+                from_addr: None,
+                to_addr: None,
+                date_header: 1000,
+                size_bytes: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(delete(&conn, account_id).is_err());
+        assert!(get(&conn, account_id).unwrap().is_some());
     }
 }

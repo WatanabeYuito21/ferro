@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
     let search_index = SearchIndex::open_or_create(&paths::search_index_dir())?;
 
     match cli.command {
-        Command::Account { action } => run_account_command(&conn, action)?,
+        Command::Account { action } => run_account_command(&conn, &search_index, action)?,
         Command::Sync {
             account_id,
             limit,
@@ -138,7 +138,11 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_account_command(conn: &ferro_core::db::Connection, action: AccountAction) -> anyhow::Result<()> {
+fn run_account_command(
+    conn: &ferro_core::db::Connection,
+    search_index: &SearchIndex,
+    action: AccountAction,
+) -> anyhow::Result<()> {
     match action {
         AccountAction::Add {
             name,
@@ -181,7 +185,7 @@ fn run_account_command(conn: &ferro_core::db::Connection, action: AccountAction)
             }
         }
         AccountAction::Remove { account_id } => {
-            account_setup::remove(conn, account_id)?;
+            account_setup::remove(conn, &paths::maildir_dir(), search_index, account_id)?;
             println!("account #{account_id} removed.");
         }
     }
