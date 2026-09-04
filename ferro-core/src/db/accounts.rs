@@ -57,6 +57,13 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Account>> {
     stmt.query_map([], row_to_account)?.collect()
 }
 
+/// アカウント行を削除する。主にkeyringへのパスワード保存失敗時のロールバック用
+/// （アカウント行だけ先にコミットされ、認証情報のない中途半端な状態が残るのを防ぐ）。
+pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM accounts WHERE id = ?1", [id])?;
+    Ok(())
+}
+
 fn row_to_account(row: &Row) -> rusqlite::Result<Account> {
     Ok(Account {
         id: row.get(0)?,
