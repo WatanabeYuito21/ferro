@@ -27,6 +27,10 @@
 
   let selectedMessageId = null
 
+  let accountsConfigPath = ''
+  let reloadingConfig = false
+  let reloadConfigStatus = ''
+
   async function refreshAccounts() {
     accounts = await invoke('list_accounts')
   }
@@ -36,6 +40,7 @@
   onMount(async () => {
     try {
       await refreshAccounts()
+      accountsConfigPath = await invoke('accounts_config_path')
     } catch (e) {
       error = String(e)
     }
@@ -81,6 +86,19 @@
       formError = String(e)
     } finally {
       submitting = false
+    }
+  }
+
+  async function reloadAccountsConfig() {
+    reloadingConfig = true
+    reloadConfigStatus = ''
+    try {
+      accounts = await invoke('reload_accounts_config')
+      reloadConfigStatus = `loaded ${accounts.length} account(s)`
+    } catch (e) {
+      reloadConfigStatus = `error: ${e}`
+    } finally {
+      reloadingConfig = false
     }
   }
 
@@ -176,6 +194,18 @@
 
   <section>
     <h2>Accounts ({accounts.length})</h2>
+    {#if accountsConfigPath}
+      <p class="hint">
+        Settings (excluding passwords) live in <code>{accountsConfigPath}</code> —
+        edit it directly and reload, or use the form below.
+        <button type="button" on:click={reloadAccountsConfig} disabled={reloadingConfig}>
+          Reload config
+        </button>
+        {#if reloadConfigStatus}
+          <span class="status">{reloadConfigStatus}</span>
+        {/if}
+      </p>
+    {/if}
     {#if accounts.length === 0}
       <p>No accounts yet.</p>
     {:else}
@@ -259,6 +289,19 @@
   }
   .error {
     color: #b00020;
+  }
+  .hint {
+    color: #555;
+    font-size: 0.9em;
+    background: #f7f7f7;
+    border: 1px solid #eee;
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+  }
+  .hint code {
+    background: #eee;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
   }
   .status {
     margin-left: 0.5rem;

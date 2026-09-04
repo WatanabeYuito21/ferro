@@ -216,10 +216,14 @@ mod tests {
     use crate::db::open_in_memory;
 
     fn make_account(conn: &Connection) -> i64 {
+        make_named_account(conn, "Test")
+    }
+
+    fn make_named_account(conn: &Connection, name: &str) -> i64 {
         accounts::insert(
             conn,
             &NewAccount {
-                name: "Test",
+                name,
                 host: "pop.example.com",
                 port: 110,
                 username: "bob",
@@ -425,8 +429,8 @@ mod tests {
     #[test]
     fn list_recent_excludes_soft_deleted_and_supports_cross_account() {
         let conn = open_in_memory().unwrap();
-        let a1 = make_account(&conn);
-        let a2 = make_account(&conn);
+        let a1 = make_named_account(&conn, "Account1");
+        let a2 = make_named_account(&conn, "Account2");
         insert_msg(&conn, a1, "u1", 100);
         insert_msg(&conn, a2, "u2", 200);
         conn.execute("UPDATE messages SET is_deleted = 1 WHERE uidl = 'u2'", [])

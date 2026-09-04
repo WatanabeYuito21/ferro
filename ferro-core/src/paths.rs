@@ -20,3 +20,11 @@ pub fn maildir_dir() -> PathBuf {
 pub fn search_index_dir() -> PathBuf {
     app_data_dir().join("search_index")
 }
+
+/// アカウント設定（パスワードを除く: name/host/port/username/use_tls）を保持する
+/// TOMLファイル。これが正の情報源で、DBの`accounts`テーブルは起動時等に
+/// `account_config::reconcile`でこの内容を反映した結果になる
+/// （`ferro_core::account_config`参照）。
+pub fn accounts_config_path() -> PathBuf {
+    app_data_dir().join("accounts.toml")
+}

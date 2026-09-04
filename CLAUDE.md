@@ -20,9 +20,11 @@
   RETRパイプライン化＋切断時の再接続再開）、SQLiteスキーマ（accounts/messages、マイグレーション、
   キーセットページネーション）、Maildir保存（ハッシュ分散、FNV-1a）、Tantivy全文検索（索引投入・
   検索・全件再構築、日本語対応のCJKバイグラムトークナイザ自前実装）、アカウント作成・削除
-  （keyring連携、失敗時ロールバック）、メール本文/添付パース（`mail-parser`ベース）
-- `ferro-cli`: `account add/list/remove`, `sync`, `list`, `search`, `reindex`, `bench`（開発用の
-  スループット/レイテンシ計測、`$TMPDIR/ferro-bench`に専用データを生成し本番データには触れない）
+  （keyring連携、失敗時ロールバック）、アカウント設定ファイル（`accounts.toml`）との同期
+  （`account_config::reconcile`）、メール本文/添付パース（`mail-parser`ベース）
+- `ferro-cli`: `account add/list/remove/reload-config`, `sync`, `list`, `search`, `reindex`, `bench`
+  （開発用のスループット/レイテンシ計測、`$TMPDIR/ferro-bench`に専用データを生成し本番データには
+  触れない）、`read`/`flag`/`delete`（既読・フラグ・論理削除）
 - `src-tauri` + `frontend`（Svelte）: アカウント管理、同期、メッセージ一覧（自前仮想スクロール）、
   全文検索、メッセージ詳細表示（本文プレーンテキスト・添付一覧・保存ダイアログ）
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
@@ -45,6 +47,17 @@
 - **フロントエンド**: Svelte（Vite）を採用予定。仮想スクロールは自前実装（固定行高ウィンドウイング + 無限スクロールページング）とする
 - **メタデータDB**: SQLite（From/To/Subject/Date/フラグ/スレッドIDなどを構造化して保持。一覧・ソート・フィルタ用）。
   一覧取得はOFFSETではなくキーセットページネーション（`date_header`カーソル）を使う方針
+- **アカウント設定は`accounts.toml`（`paths::accounts_config_path`、アプリデータディレクトリ直下）が
+  正の情報源**。パスワードを除くname/host/port/username/use_tlsをここに保持し、
+  CLI/GUIの起動時（および明示的な`ferro account reload-config`/GUIの「Reload config」ボタン）に
+  `account_config::reconcile`でDBの`accounts`テーブルへ反映する。`name`をキーに既存行と照合し、
+  見つかれば内部idを維持したまま設定を上書き（keyring/messages/Maildirとの紐付けを保つため）、
+  見つからなければ新規作成する。**ファイルから消えたアカウントは自動削除しない**
+  （削除するとメッセージも消える破壊的操作のため、意図せぬファイル編集でメールを失わないように。
+  削除は`ferro account remove`/GUIのRemoveボタンで明示的に行う。この操作は設定ファイル側の
+  該当エントリも合わせて取り除く）。CLI/GUIの「アカウント追加」操作は直接DBには書き込まず、
+  `accounts.toml`に追記→保存→reconcileという経路を通る（手編集と同じ土俵に乗せるため）。
+  パスワードはこのファイルに含めず、従来どおりkeyringのみで管理する。
 - **全文検索インデックス**: **Tantivy**（Rust製、純Rust実装）を採用する。
   notmuch（Xapian/C実装）はWindows配布が実質困難なためTauriアプリの配布方針と合わず不採用。
   検索エンジンはSQLiteと疎結合（`messages.id`をdoc idとして流用、`fts_indexed_at`/`fts_doc_version`で連携）とし、

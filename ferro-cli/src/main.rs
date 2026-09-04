@@ -1,8 +1,9 @@
 mod bench;
 
 use clap::{Parser, Subcommand};
+use ferro_core::account_config::{self, AccountConfig};
 use ferro_core::account_setup;
-use ferro_core::db::accounts::{self, NewAccount};
+use ferro_core::db::accounts;
 use ferro_core::db::messages;
 use ferro_core::search::SearchIndex;
 use ferro_core::{credentials, paths, reindex, sync};
@@ -79,7 +80,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AccountAction {
-    /// アカウントを追加する。パスワードは対話プロンプトで入力し、OSのkeyringに保存する
+    /// アカウントを追加する。`accounts.toml`にエントリを追記してから反映する
+    /// （直接ファイルを編集して追加することもできる）。パスワードは対話プロンプトで
+    /// 入力し、OSのkeyringに保存する
     Add {
         #[arg(long)]
         name: String,
@@ -95,8 +98,12 @@ enum AccountAction {
     },
     /// アカウント一覧を表示する
     List,
-    /// アカウントを削除する（DB上のアカウント行とkeyring上のパスワードを両方消す）
+    /// アカウントを削除する（DB行・Maildir・検索インデックス・keyring・
+    /// `accounts.toml`のエントリを全て消す。POP3サーバー上のメールには触れない）
     Remove { account_id: i64 },
+    /// `accounts.toml`を読み直してDBに反映する（他のどのaccountサブコマンドも
+    /// 実行時に自動でこれを行うため、明示的に叩く必要は通常ない）
+    ReloadConfig,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -105,6 +112,10 @@ fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(paths::app_data_dir())?;
     let conn = ferro_core::db::open(&paths::db_path())?;
     let search_index = SearchIndex::open_or_create(&paths::search_index_dir())?;
+
+    // accounts.tomlが正の情報源。存在すれば毎回起動時にDBへ反映する（無ければ空扱い）。
+    // ファイルに無くなったアカウントは削除しない（`account_config::reconcile`参照）。
+    account_config::load_and_reconcile(&conn, &paths::accounts_config_path())?;
 
     match cli.command {
         Command::Account { action } => run_account_command(&conn, &search_index, action)?,
@@ -152,22 +163,21 @@ fn run_account_command(
             use_tls,
         } => {
             let password = rpassword::prompt_password("Password: ")?;
-            let new_account = NewAccount {
-                name: &name,
-                host: &host,
+            let new_account = AccountConfig {
+                name,
+                host,
                 port,
-                username: &username,
+                username,
                 use_tls,
             };
-            let account = account_setup::create(conn, &new_account, &password).map_err(|e| {
-                match e {
-                    account_setup::CreateAccountError::Keyring(inner) => anyhow::anyhow!(
+            let account = account_setup::add(conn, &paths::accounts_config_path(), &new_account, &password)
+                .map_err(|e| match e {
+                    account_setup::AddAccountError::Keyring(inner) => anyhow::anyhow!(
                         "failed to save the password to the OS keyring: {inner}\n\
                          account was not created. See CLAUDE.md's keyring troubleshooting notes."
                     ),
                     other => anyhow::anyhow!(other),
-                }
-            })?;
+                })?;
 
             println!("account #{} ({}) created.", account.id, account.name);
         }
@@ -185,8 +195,23 @@ fn run_account_command(
             }
         }
         AccountAction::Remove { account_id } => {
-            account_setup::remove(conn, &paths::maildir_dir(), search_index, account_id)?;
+            account_setup::remove(
+                conn,
+                &paths::maildir_dir(),
+                search_index,
+                &paths::accounts_config_path(),
+                account_id,
+            )?;
             println!("account #{account_id} removed.");
+        }
+        AccountAction::ReloadConfig => {
+            let path = paths::accounts_config_path();
+            let accounts = account_config::load_and_reconcile(conn, &path)?;
+            println!(
+                "reloaded {} account(s) from {}.",
+                accounts.len(),
+                path.display()
+            );
         }
     }
     Ok(())
