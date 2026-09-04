@@ -19,14 +19,13 @@
 - `ferro-core`: POP3クライアント（USER/PASS/STAT/LIST/UIDL/RETR/DELE/QUIT/STLS、暗黙的TLS、
   RETRパイプライン化＋切断時の再接続再開）、SQLiteスキーマ（accounts/messages、マイグレーション、
   キーセットページネーション）、Maildir保存（ハッシュ分散、FNV-1a）、Tantivy全文検索（索引投入・
-  検索・全件再構築）、アカウント作成・削除（keyring連携、失敗時ロールバック）、メール本文/添付
-  パース（`mail-parser`ベース）
+  検索・全件再構築、日本語対応のCJKバイグラムトークナイザ自前実装）、アカウント作成・削除
+  （keyring連携、失敗時ロールバック）、メール本文/添付パース（`mail-parser`ベース）
 - `ferro-cli`: `account add/list/remove`, `sync`, `list`, `search`, `reindex`, `bench`（開発用の
   スループット/レイテンシ計測、`$TMPDIR/ferro-bench`に専用データを生成し本番データには触れない）
 - `src-tauri` + `frontend`（Svelte）: アカウント管理、同期、メッセージ一覧（自前仮想スクロール）、
   全文検索、メッセージ詳細表示（本文プレーンテキスト・添付一覧・保存ダイアログ）
-- 未着手/既知の課題: 日本語対応トークナイザ（Tantivyのデフォルトは空白区切り前提で日本語の
-  分かち書きに向かない）、Windowsパッケージング仕上げ、下記のTantivy/Windows信頼性の既知の問題
+- 未着手/既知の課題: Windowsパッケージング仕上げ、下記のTantivy/Windows信頼性の既知の問題
 
 ## 要件
 
@@ -45,7 +44,12 @@
 - **全文検索インデックス**: **Tantivy**（Rust製、純Rust実装）を採用する。
   notmuch（Xapian/C実装）はWindows配布が実質困難なためTauriアプリの配布方針と合わず不採用。
   検索エンジンはSQLiteと疎結合（`messages.id`をdoc idとして流用、`fts_indexed_at`/`fts_doc_version`で連携）とし、
-  Subject/From（表示名・アドレス）/本文（Maildirから読み直したプレーンテキスト）を索引化する
+  Subject/From（表示名・アドレス）/本文（Maildirから読み直したプレーンテキスト）を索引化する。
+  トークナイザはTantivy標準の空白区切り（"default"）ではなく、`ferro_core::search::cjk_tokenizer`で
+  自前実装したCJKバイグラム（2文字ずつ重複ありで分割。英数字は通常の単語区切り）を使う。
+  形態素解析（lindera等）は辞書同梱で数十MB単位のバイナリ増になり、notmuch不採用の理由（軽量な
+  デスクトップ配布を優先）と同じ動機で見送った。バイグラム方式は形態素解析ほど精密ではないが
+  （分かち書き単位ではなく機械的な部分文字列一致になる）、辞書更新が要らず実装・検証も単純。
 - **生メール保存**: Maildir形式（1ファイル1メッセージ、ハッシュ分散で`cur/xx/yy/<account_id>-<uidl>.eml`に格納）とする。
   SQLite BLOB案は不採用（将来の切替に備えて`messages.raw_storage_kind`/`raw_blob`カラムは設計上想定しておく）
 - **POP3クライアント**: 自前実装する（USER/PASS/STAT/LIST/UIDL/RETR/DELE/QUIT/STLS）。
@@ -108,9 +112,10 @@
 
 ## 未決定・要検討事項
 
-- Tantivyの日本語トークナイザ対応（未着手、上記「現在の実装状況」参照）
 - 上記のTantivy/IndexWriter信頼性問題への根本対応（現状はバッチ単位リトライ＋
   自己修復で緩和のみ。真因はWindows実機でしか再現しておらず未特定）
+- CJKバイグラムトークナイザは実データでの検索体感（ノイズヒットの多さ等）を見て、
+  必要なら形態素解析への切替を再検討する余地あり
 - 次に着手するテーマは都度相談して決める
 
 ## Git運用ルール

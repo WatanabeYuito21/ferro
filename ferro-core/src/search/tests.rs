@@ -1,6 +1,7 @@
 use tempfile::tempdir;
 
 use super::*;
+use tantivy::schema::TEXT;
 
 fn sample<'a>(id: i64, subject: &'a str, from: &'a str, body: &'a str) -> IndexableMessage<'a> {
     IndexableMessage {
@@ -37,6 +38,41 @@ fn index_and_search_roundtrip() {
     assert_eq!(index.search("alice", 10).unwrap(), vec![1]);
     assert_eq!(index.search("unrelated", 10).unwrap(), vec![2]);
     assert!(index.search("nonexistent-term", 10).unwrap().is_empty());
+}
+
+/// 日本語は分かち書きされないため、標準の空白区切りトークナイザでは
+/// 件名・本文がほぼ1つの巨大トークンになり実質検索できない。
+/// CJKバイグラムトークナイザにより部分一致で検索できることを確認する。
+#[test]
+fn japanese_text_is_searchable_by_substring() {
+    let index = SearchIndex::create_in_ram().unwrap();
+
+    index
+        .index_message(&sample(
+            1,
+            "明日の会議について",
+            "田中太郎 tanaka@example.com",
+            "資料を添付しましたのでご確認ください。全文検索のテストです。",
+        ))
+        .unwrap();
+    index
+        .index_message(&sample(
+            2,
+            "旅行の計画",
+            "鈴木花子 suzuki@example.com",
+            "来月の旅行先について相談したいことがあります。",
+        ))
+        .unwrap();
+    index.commit().unwrap();
+
+    // 件名中の部分文字列（分かち書き単位ではなく、単なる部分一致）でヒットする。
+    assert_eq!(index.search("会議", 10).unwrap(), vec![1]);
+    // 本文中の部分文字列。
+    assert_eq!(index.search("全文検索", 10).unwrap(), vec![1]);
+    assert_eq!(index.search("旅行", 10).unwrap(), vec![2]);
+    // 差出人の表示名でもヒットする。
+    assert_eq!(index.search("田中", 10).unwrap(), vec![1]);
+    assert!(index.search("存在しない単語", 10).unwrap().is_empty());
 }
 
 #[test]
