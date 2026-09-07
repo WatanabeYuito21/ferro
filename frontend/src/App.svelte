@@ -7,6 +7,7 @@
   import Sidebar from './lib/Sidebar.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import { matchColor } from './lib/colorRules.js'
+  import { formatDate } from './lib/formatDate.js'
 
   // Add account/Account listはメニューバー(View > Manage Accounts…)から開く
   // 別画面として切り出している（`navigate`イベントで切り替える。下のonMount参照）。
@@ -357,6 +358,7 @@
                         >
                           <span class="from" style={rowColor ? `color: ${rowColor}` : ''}>{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
                           <span class="subject" style={rowColor ? `color: ${rowColor}` : ''}>{message.subject ?? '(no subject)'}</span>
+                          <span class="date">{formatDate(message.date_header)}</span>
                         </button>
                       </li>
                     {/each}
@@ -533,5 +535,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .search-results .date {
+    flex: none;
+    font-size: 11px;
+    color: var(--text-faint);
   }
 </style>
