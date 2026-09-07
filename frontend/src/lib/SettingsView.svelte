@@ -4,6 +4,7 @@
   // 設計のため対象が無い）「送信の取り消し」（送信機能自体が無い）は実装しない。
   import { invoke } from '@tauri-apps/api/core'
   import AccountsView from './AccountsView.svelte'
+  import ColorRulesView from './ColorRulesView.svelte'
 
   let {
     onBack = () => {},
@@ -16,6 +17,11 @@
     onRemoveAccount = async () => {},
     onSyncAccount = async () => {},
     onReloadAccountsConfig = async () => {},
+    colorRules = [],
+    colorRulesConfigPath = '',
+    onAddColorRule = async () => {},
+    onRemoveColorRule = async () => {},
+    onReloadColorRules = async () => {},
   } = $props()
 
   let settings = $state(null)
@@ -183,6 +189,15 @@
         <p class="reindex-status">{reindexStatus}</p>
       {/if}
     </div>
+
+    <h2 class="section-title">色分けルール</h2>
+    <ColorRulesView
+      rules={colorRules}
+      configPath={colorRulesConfigPath}
+      onAdd={onAddColorRule}
+      onRemove={onRemoveColorRule}
+      onReload={onReloadColorRules}
+    />
   {/if}
 </div>
 
