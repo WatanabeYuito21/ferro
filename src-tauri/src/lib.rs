@@ -260,37 +260,64 @@ fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<Message
     })
 }
 
+/// 検索インデックスの初回再構築（`spawn_initial_search_catchup`）やバックグラウンド
+/// 同期は`write_conn`を長時間（Tantivyのcommitリトライ込みで最大約8.4秒/バッチ）
+/// 保持しうる。メッセージ状態を変える系のコマンドも同じ`write_conn`を取り合うため、
+/// 素の(非async)`#[tauri::command]`のままだとIPCディスパッチスレッドがロック待ちで
+/// 塞がり、アプリ全体が「応答なし」になる（`sync_account`と同じ理由で実際に踏んだ。
+/// 大量の未投入分を一気に片付ける初回キャッチアップ中に特に起きやすい）。
+/// そのため`sync_account`/`reindex_all`と同様に`spawn_blocking`へ逃がす。
 #[tauri::command]
-fn set_read(state: State<AppState>, message_id: i64, is_read: bool) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    db::messages::set_read(&conn, message_id, is_read).map_err(|e| e.to_string())
+async fn set_read(app: AppHandle, message_id: i64, is_read: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        db::messages::set_read(&conn, message_id, is_read).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn set_flagged(state: State<AppState>, message_id: i64, is_flagged: bool) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    db::messages::set_flagged(&conn, message_id, is_flagged).map_err(|e| e.to_string())
+async fn set_flagged(app: AppHandle, message_id: i64, is_flagged: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        db::messages::set_flagged(&conn, message_id, is_flagged).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 論理削除する/復元する（POP3サーバー側のDELEとは独立したローカルの削除フラグ）。
 /// 削除時は検索インデックスからも取り除く（`ferro_core::message_actions::set_deleted`参照）。
 #[tauri::command]
-fn set_deleted(state: State<AppState>, message_id: i64, is_deleted: bool) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    ferro_core::message_actions::set_deleted(&conn, &state.search_index, message_id, is_deleted)
-        .map_err(|e| e.to_string())
+async fn set_deleted(app: AppHandle, message_id: i64, is_deleted: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        ferro_core::message_actions::set_deleted(&conn, &state.search_index, message_id, is_deleted)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn set_archived(state: State<AppState>, message_id: i64, is_archived: bool) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    db::messages::set_archived(&conn, message_id, is_archived).map_err(|e| e.to_string())
+async fn set_archived(app: AppHandle, message_id: i64, is_archived: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        db::messages::set_archived(&conn, message_id, is_archived).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// `preset`は"1d"/"3d"/"1w"のいずれか。Noneを渡すとスヌーズ解除（受信箱へ即座に戻す）。
 /// 期限の時刻計算はここ(Rust側)で行い、フロントはUnix時刻を扱わない。
 #[tauri::command]
-fn set_snoozed(state: State<AppState>, message_id: i64, preset: Option<String>) -> Result<(), String> {
+async fn set_snoozed(app: AppHandle, message_id: i64, preset: Option<String>) -> Result<(), String> {
     let until = match preset.as_deref() {
         None => None,
         Some("1d") => Some(now_unix() + 24 * 60 * 60),
@@ -298,8 +325,13 @@ fn set_snoozed(state: State<AppState>, message_id: i64, preset: Option<String>) 
         Some("1w") => Some(now_unix() + 7 * 24 * 60 * 60),
         Some(other) => return Err(format!("unknown snooze preset: {other}")),
     };
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    db::messages::set_snoozed(&conn, message_id, until).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        db::messages::set_snoozed(&conn, message_id, until).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// `get_message_detail`が返した添付の`index`を指定して、フロント側が
@@ -416,29 +448,44 @@ fn list_labels(state: State<AppState>) -> Result<Vec<LabelWithCountView>, String
 }
 
 #[tauri::command]
-fn create_label(state: State<AppState>, name: String, color: String) -> Result<LabelView, String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    let id = db::labels::insert(&conn, &name, &color).map_err(|e| e.to_string())?;
-    Ok(LabelView { id, name, color })
+async fn create_label(app: AppHandle, name: String, color: String) -> Result<LabelView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        let id = db::labels::insert(&conn, &name, &color).map_err(|e| e.to_string())?;
+        Ok(LabelView { id, name, color })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// ラベル自体と、全メッセージへの付与関係も合わせて削除する
 /// (`db::labels::delete`参照。メッセージ本体・Maildir・検索インデックスは触れない)。
 #[tauri::command]
-fn delete_label(state: State<AppState>, label_id: i64) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    db::labels::delete(&conn, label_id).map_err(|e| e.to_string())
+async fn delete_label(app: AppHandle, label_id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        db::labels::delete(&conn, label_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn set_message_label(
-    state: State<AppState>,
+async fn set_message_label(
+    app: AppHandle,
     message_id: i64,
     label_id: i64,
     assigned: bool,
 ) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    db::labels::set_on_message(&conn, message_id, label_id, assigned).map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        db::labels::set_on_message(&conn, message_id, label_id, assigned).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize, Deserialize)]
@@ -478,16 +525,21 @@ fn get_settings(state: State<AppState>) -> Result<SettingsView, String> {
 }
 
 #[tauri::command]
-fn update_settings(state: State<AppState>, settings: SettingsView) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    db::settings::set(&conn, &settings.into()).map_err(|e| e.to_string())
+async fn update_settings(app: AppHandle, settings: SettingsView) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        db::settings::set(&conn, &settings.into()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// アカウントを追加する: `accounts.toml`にエントリを追記してからDBに反映し、
 /// パスワードをOS keyringに保存する（`account_setup::add`参照）。
 #[tauri::command]
-fn add_account(
-    state: State<AppState>,
+async fn add_account(
+    app: AppHandle,
     name: String,
     host: String,
     port: u16,
@@ -495,40 +547,55 @@ fn add_account(
     use_tls: bool,
     password: String,
 ) -> Result<AccountView, String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    let new_account = AccountConfig {
-        name,
-        host,
-        port,
-        username,
-        use_tls,
-    };
-    account_setup::add(&conn, &paths::accounts_config_path(), &new_account, &password)
-        .map(AccountView::from)
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        let new_account = AccountConfig {
+            name,
+            host,
+            port,
+            username,
+            use_tls,
+        };
+        account_setup::add(&conn, &paths::accounts_config_path(), &new_account, &password)
+            .map(AccountView::from)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn remove_account(state: State<AppState>, account_id: i64) -> Result<(), String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    account_setup::remove(
-        &conn,
-        &paths::maildir_dir(),
-        &state.search_index,
-        &paths::accounts_config_path(),
-        account_id,
-    )
-    .map_err(|e| e.to_string())
+async fn remove_account(app: AppHandle, account_id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        account_setup::remove(
+            &conn,
+            &paths::maildir_dir(),
+            &state.search_index,
+            &paths::accounts_config_path(),
+            account_id,
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// `accounts.toml`を読み直してDBに反映する。アプリ起動中に手でファイルを
 /// 編集した場合に使う（他は起動時に一度だけ自動で反映する）。
 #[tauri::command]
-fn reload_accounts_config(state: State<AppState>) -> Result<Vec<AccountView>, String> {
-    let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-    account_config::load_and_reconcile(&conn, &paths::accounts_config_path())
-        .map(|accounts| accounts.into_iter().map(AccountView::from).collect())
-        .map_err(|e| e.to_string())
+async fn reload_accounts_config(app: AppHandle) -> Result<Vec<AccountView>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        account_config::load_and_reconcile(&conn, &paths::accounts_config_path())
+            .map(|accounts| accounts.into_iter().map(AccountView::from).collect())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// フロント側で「設定ファイルはここにあります」と案内表示するためのパス。
