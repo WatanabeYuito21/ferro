@@ -651,11 +651,40 @@ fn current_sync_interval(app_handle: &AppHandle) -> Duration {
 /// 「Sync間隔」はそこまで即時性が求められる設定ではないため、単純さを優先した）。
 fn spawn_background_sync(app_handle: AppHandle) {
     std::thread::spawn(move || {
+        // 検索インデックス未投入分を拾い直すためのカーソル（このスレッドの
+        // 生存期間だけ持てば十分。プロセス再起動後は0から再開すればよい）。
+        // `step_search_catchup`のドキュメント参照。
+        let mut catchup_after_id = 0i64;
         loop {
             std::thread::sleep(current_sync_interval(&app_handle));
             run_background_sync_once(&app_handle);
+            step_search_catchup(&app_handle, &mut catchup_after_id);
         }
     });
+}
+
+/// `catch_up_unindexed`を1回だけ呼び、カーソルを進める。
+///
+/// 戻り値の`next_after_id`が`Some`ならそこへ、`None`（未投入分の末尾まで
+/// 到達）なら次回0から周回し直すようカーソルを更新する。呼び出し・DBロック
+/// 失敗時はカーソルを据え置き、次回同じ位置からやり直す。
+fn step_search_catchup(app_handle: &AppHandle, after_id: &mut i64) -> usize {
+    let state = app_handle.state::<AppState>();
+    let Ok(conn) = state.write_conn.lock() else {
+        return 0;
+    };
+    match reindex::catch_up_unindexed(&conn, &paths::maildir_dir(), &state.search_index, *after_id)
+    {
+        Ok((indexed, Some(next))) => {
+            *after_id = next;
+            indexed
+        }
+        Ok((indexed, None)) => {
+            *after_id = 0;
+            indexed
+        }
+        Err(_) => 0,
+    }
 }
 
 /// 起動直後に一度だけ、検索インデックス未投入(`fts_indexed_at IS NULL`)の
@@ -668,28 +697,48 @@ fn spawn_background_sync(app_handle: AppHandle) {
 /// 1サイクルあたり500件ずつしか処理しないため、数万件規模の既存データだと
 /// 追いつくまでに何時間もかかってしまう（実際に検索で見つかるはずのメッセージが
 /// 見つからない、という形で踏んだ）。起動時にこのスレッドで一気に片付けておく。
-/// 以後の(sync中にクラッシュでリトライを使い切った場合の)小規模な取りこぼしは
-/// `run_background_sync_once`内の定期呼び出しでカバーされる。
+///
+/// `after_id`カーソルで先頭から末尾まで1周し、1周の間に1件も投入できなければ
+/// （＝残っている未投入メッセージ全てが今は投入不能、または既に無い）そこで
+/// 終了する。特定のバッチが繰り返し失敗しても`after_id`が前進し続けるため、
+/// 以前のように「同じ集合に永久に足止めされて後続に一生手が届かない」ことはない
+/// （`db::messages::list_unindexed`のドキュメント参照）。
 fn spawn_initial_search_catchup(app_handle: AppHandle) {
     std::thread::spawn(move || {
-        let state = app_handle.state::<AppState>();
-        // 安全弁。1回500件なので最大50万件相当（それでも追いつかない場合は
-        // CLAUDE.md記載どおりTantivyが同一プロセス内で恒常的に壊れているとみられ、
-        // ここでループし続けても解決しないため諦める）。
-        const MAX_ITERATIONS: u32 = 1000;
+        // 安全弁。周回してもなお進展が無くなり次第即座に終了するため、
+        // これは「間違って無限ループしない」ための上限に過ぎない。
+        const MAX_ITERATIONS: u32 = 5000;
+        let mut after_id = 0i64;
+        let mut indexed_this_lap = 0usize;
         for _ in 0..MAX_ITERATIONS {
+            let state = app_handle.state::<AppState>();
             let result = {
                 let Ok(conn) = state.write_conn.lock() else {
                     return;
                 };
-                reindex::catch_up_unindexed(&conn, &paths::maildir_dir(), &state.search_index)
+                reindex::catch_up_unindexed(&conn, &paths::maildir_dir(), &state.search_index, after_id)
             };
             match result {
-                Ok(0) => return, // 追いついた
-                Ok(_) => std::thread::sleep(Duration::from_millis(200)),
-                // 失敗時もあきらめて全部止めず、少し長めに待って次のバッチへ進む
-                // （commit失敗時は`recover_writer`で新しいwriterに差し替わっている
-                // ので、次のバッチは別のIndexWriter状態で試せる）。
+                Ok((indexed, Some(next))) => {
+                    indexed_this_lap += indexed;
+                    after_id = next;
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                Ok((indexed, None)) => {
+                    indexed_this_lap += indexed;
+                    if indexed_this_lap == 0 {
+                        return; // 1周して何も投入できなかった＝完全に追いついた
+                    }
+                    // まだ何か投入できたなら、取りこぼしが無いか最初からもう一周確認する
+                    // （最初の周で失敗したバッチが、後続処理を挟んだ2周目には
+                    // 成功することがある。CLAUDE.md記載のクラッシュは間欠的なため）。
+                    after_id = 0;
+                    indexed_this_lap = 0;
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                // Tantivy側のcrashは`catch_up_unindexed`内で1件ずつのフォールバックまで
+                // 吸収済みなので、ここに来るのはSQLite側の失敗(ロック競合等)のみ。
+                // after_idは据え置いたまま少し待って次回同じ位置からやり直す。
                 Err(_) => std::thread::sleep(Duration::from_secs(2)),
             }
         }
@@ -752,14 +801,9 @@ fn run_background_sync_once(app_handle: &AppHandle) {
         };
         let _ = app_handle.emit("background-sync", event);
     }
-
     // sync中にTantivyのIndexWriterクラッシュ(`with_commit_retry`のドキュメント参照)で
-    // 検索インデックスへの投入が漏れたメッセージを、サイクルのたびに少量ずつ
-    // 自動で拾い直す。これにより「Rebuild search index」を手動で押す必要が
-    // 基本的に無くなる（起きても次のサイクルで自然に解消する）。
-    if let Ok(conn) = state.write_conn.lock() {
-        let _ = reindex::catch_up_unindexed(&conn, &paths::maildir_dir(), &state.search_index);
-    }
+    // 検索インデックスへの投入が漏れたメッセージの拾い直しは、呼び出し元
+    // (`spawn_background_sync`)がサイクルのたびに`step_search_catchup`で行う。
 }
 
 /// SettingsとMessages一覧はOSネイティブのメニューバーから切り替える別画面として

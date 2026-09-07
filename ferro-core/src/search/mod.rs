@@ -167,7 +167,13 @@ impl SearchIndex {
 
     fn from_index(index: Index, fields: Fields) -> Result<SearchIndex> {
         register_tokenizer(&index);
-        let writer: IndexWriter = index.writer(50_000_000)?;
+        // `index.writer(...)`はCPUコア数に応じて複数(最大8)のマージ/インデックス
+        // ワーカースレッドを立ち上げるが、Windows実機で断続的に起きるIndexWriter
+        // クラッシュ（`commit`のドキュメント参照）はこれらワーカースレッドの異常終了が
+        // 疑われている。同時に動くスレッドが多いほどファイルI/Oの同時発生量が増え、
+        // アンチウイルス/EDRのリアルタイムスキャンと衝突する機会も増えると考えられる
+        // ため、スループットより信頼性を優先してシングルスレッドに固定する。
+        let writer: IndexWriter = index.writer_with_num_threads(1, 50_000_000)?;
         // OnCommitWithDelayは別スレッドでの非同期リロードなので、commit直後に
         // searchしても反映されているとは限らない。呼び出し側がcommit()の都度
         // 明示的にreloadするManualの方が、索引投入直後に検索したいこのアプリの
@@ -213,7 +219,8 @@ impl SearchIndex {
     fn recover_writer(&self) -> Result<()> {
         let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
         *slot = None; // 古いwriterをここでdropし、ロックファイルを解放する
-        *slot = Some(self.index.writer(50_000_000)?);
+        // `from_index`と同じ理由でシングルスレッドに固定する。
+        *slot = Some(self.index.writer_with_num_threads(1, 50_000_000)?);
         Ok(())
     }
 
