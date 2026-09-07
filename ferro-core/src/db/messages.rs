@@ -203,6 +203,24 @@ pub fn mark_indexed(conn: &Connection, ids: &[i64]) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// `attachment_count`/`preview`を再計算した値で上書きする。`reindex_all`が
+/// Maildirから読み直したメッセージについて呼ぶ（プレビューの切り詰め長を伸ばした
+/// ([`crate::mail::parse::make_preview`]) 際に、sync時点で既に古い(短い)previewが
+/// 保存されている既存メッセージへ遡って反映するため。色分けルールがpreviewの
+/// 途中までしかマッチ対象に見えていなかった、という形で実際に踏んだ）。
+pub fn update_preview(
+    conn: &Connection,
+    id: i64,
+    attachment_count: i64,
+    preview: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE messages SET attachment_count = ?1, preview = ?2 WHERE id = ?3",
+        params![attachment_count, preview, id],
+    )?;
+    Ok(())
+}
+
 /// キーセットページネーションで新着順（date_header降順）に一覧取得する。
 ///
 /// `account_id`がNoneなら全アカウント横断。`before`を指定すると、そのdate_headerより

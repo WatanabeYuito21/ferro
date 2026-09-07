@@ -4,12 +4,26 @@ use super::*;
 use tantivy::schema::TEXT;
 
 fn sample<'a>(id: i64, subject: &'a str, from: &'a str, body: &'a str) -> IndexableMessage<'a> {
+    // 並び順のテスト(`search_orders_matches_by_newest_date_header_first`)以外は
+    // 日付の値そのものを気にしないので、idをそのままdate_headerとしても使う
+    // （idの大小関係と時系列を一致させておけば、他のテストの意図とも矛盾しない）。
     IndexableMessage {
         id,
         subject,
         from,
         body,
+        date_header: id,
     }
+}
+
+fn sample_with_date<'a>(
+    id: i64,
+    subject: &'a str,
+    from: &'a str,
+    body: &'a str,
+    date_header: i64,
+) -> IndexableMessage<'a> {
+    IndexableMessage { id, subject, from, body, date_header }
 }
 
 #[test]
@@ -97,21 +111,58 @@ fn multi_bigram_query_requires_all_fragments_and_avoids_noisy_partial_matches() 
     assert_eq!(index.search("全文検索", 10).unwrap(), vec![1]);
 }
 
-/// 件名・差出人の一致を本文一致より優先するフィールドブースト
-/// (`set_field_boost`)により、件名にクエリを含む文書が上位に出ることを確認する。
+/// 検索結果は関連度ではなく常に受信日時(date_header)の新しい順で返る
+/// （「検索をした場合常に受信日付新しい順になるようにしてほしい」という指摘への対応）。
+/// 件名一致(本来なら関連度が高いはずの文書)でも、本文一致で日付が新しい方が
+/// 先に来ることを確認する。
 #[test]
-fn subject_matches_rank_above_body_only_matches() {
+fn search_orders_matches_by_newest_date_header_first() {
     let index = SearchIndex::create_in_ram().unwrap();
 
     index
-        .index_message(&sample(1, "unrelated subject", "a a@example.com", "mentions apple in the body"))
+        .index_message(&sample_with_date(
+            1,
+            "apple",
+            "a a@example.com",
+            "a different body",
+            /* date_header */ 1000,
+        ))
         .unwrap();
     index
-        .index_message(&sample(2, "apple", "b b@example.com", "a different body"))
+        .index_message(&sample_with_date(
+            2,
+            "unrelated subject",
+            "b b@example.com",
+            "mentions apple in the body",
+            /* date_header */ 2000,
+        ))
         .unwrap();
     index.commit().unwrap();
 
     assert_eq!(index.search("apple", 10).unwrap(), vec![2, 1]);
+}
+
+/// マッチした文書がlimitを超える場合でも、常に一番新しいlimit件を返す
+/// （関連度が高いが古い文書に押し出されて、新しいが関連度が低い文書が
+/// 漏れることが無い）。
+#[test]
+fn search_returns_the_newest_matches_even_when_more_than_limit_match() {
+    let index = SearchIndex::create_in_ram().unwrap();
+
+    for i in 1..=5i64 {
+        index
+            .index_message(&sample_with_date(
+                i,
+                "alert",
+                "monitor@example.com",
+                "body",
+                i * 1000,
+            ))
+            .unwrap();
+    }
+    index.commit().unwrap();
+
+    assert_eq!(index.search("alert", 3).unwrap(), vec![5, 4, 3]);
 }
 
 #[test]

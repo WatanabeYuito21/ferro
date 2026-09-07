@@ -29,7 +29,13 @@
   全文検索、メッセージ詳細表示（本文プレーンテキスト・添付一覧・保存ダイアログ）、
   フォルダ/ラベルによる整理、設定画面、色分けルール（`color_rules.toml`。件名/差出人/
   本文プレビューに特定文字列を含むメッセージの一覧表示を色分けする。マッチ判定は
-  フロント側の`colorRules.js`が行う。`ferro_core::color_rules`参照）
+  フロント側の`colorRules.js`が行う。`ferro_core::color_rules`参照。マッチ対象の
+  `preview`はsync時に本文冒頭から最大500文字まで切り詰めて保存したもの
+  （`mail::parse::make_preview`）で全文ではないため、それより後ろにしか
+  現れない文字列を狙ったルールは効かない。以前は120文字だったため一部のルールが
+  効かないという形で実際に踏み、500文字に広げると同時に`reindex_all`が
+  Maildirから読み直した内容で既存メッセージの`preview`/`attachment_count`も
+  遡って更新するようにした）
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`
@@ -70,6 +76,10 @@
   形態素解析（lindera等）は辞書同梱で数十MB単位のバイナリ増になり、notmuch不採用の理由（軽量な
   デスクトップ配布を優先）と同じ動機で見送った。バイグラム方式は形態素解析ほど精密ではないが
   （分かち書き単位ではなく機械的な部分文字列一致になる）、辞書更新が要らず実装・検証も単純。
+  検索結果の並び順は関連度スコアではなく常に受信日時(`date_header`、FASTフィールドとして
+  索引に持たせ`order_by_u64_field`で並べ替える)の新しい順（「検索しても新しい順に並ばない」
+  という指摘への対応）。`QueryParser`のAND結合（下記）はどの文書がマッチするかの絞り込みに
+  のみ関わり、並び順には関与しない。
 - **生メール保存**: Maildir形式（1ファイル1メッセージ、ハッシュ分散で`cur/xx/yy/<account_id>-<uidl>.eml`に格納）とする。
   SQLite BLOB案は不採用（将来の切替に備えて`messages.raw_storage_kind`/`raw_blob`カラムは設計上想定しておく）
 - **POP3クライアント**: 自前実装する（USER/PASS/STAT/LIST/UIDL/RETR/DELE/QUIT/STLS）。

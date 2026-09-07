@@ -6,7 +6,7 @@ use crate::db::accounts::Account;
 use crate::db::messages::{self, NewMessage};
 use crate::db::now_unix;
 use crate::mail::attachments;
-use crate::mail::parse::parse_full;
+use crate::mail::parse::{make_preview, parse_full};
 use crate::maildir;
 use crate::pop3::{Pop3Client, Pop3Error};
 use crate::search::{IndexableMessage, SearchError, SearchIndex, with_commit_retry};
@@ -149,6 +149,7 @@ struct PendingIndex {
     subject: String,
     from: String,
     body: String,
+    date_header: i64,
 }
 
 /// 溜まった`pending`を検索インデックスへ投入してcommitする
@@ -171,6 +172,7 @@ fn flush_pending_index(
                 subject: &item.subject,
                 from: &item.from,
                 body: &item.body,
+                date_header: item.date_header,
             })?;
         }
         search_index.commit()
@@ -237,6 +239,7 @@ fn fetch_and_store(
             // 「起動時に何も舐めない」方針に反するため)。
             let attachment_count = attachments::list_attachments(&raw).len() as i64;
             let preview = make_preview(parsed.body.as_deref());
+            let date_header = parsed.headers.date_header.unwrap_or_else(now_unix);
             let new_id = messages::insert_new(
                 &tx,
                 &NewMessage {
@@ -247,7 +250,7 @@ fn fetch_and_store(
                     from_name: parsed.headers.from_name.as_deref(),
                     from_addr: parsed.headers.from_addr.as_deref(),
                     to_addr: parsed.headers.to_addr.as_deref(),
-                    date_header: parsed.headers.date_header.unwrap_or_else(now_unix),
+                    date_header,
                     size_bytes: raw.len() as i64,
                     attachment_count,
                     preview: preview.as_deref(),
@@ -265,6 +268,7 @@ fn fetch_and_store(
                     subject: parsed.headers.subject.as_deref().unwrap_or("").to_string(),
                     from,
                     body: parsed.body.as_deref().unwrap_or("").to_string(),
+                    date_header,
                 });
             }
             fetched += 1;
@@ -285,17 +289,6 @@ fn fetch_and_store(
 
     flush_pending_index(conn, search_index, &mut pending_index)?;
     Ok((fetched, false))
-}
-
-/// 一覧のプレビュー行用に、本文冒頭を改行を潰した1行・最大120文字に切り詰める。
-/// マルチバイト文字境界で壊れないよう`chars()`単位で切る。
-fn make_preview(body: Option<&str>) -> Option<String> {
-    const MAX_CHARS: usize = 120;
-    let collapsed: String = body?.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        return None;
-    }
-    Some(collapsed.chars().take(MAX_CHARS).collect())
 }
 
 fn is_disconnect(err: &Pop3Error) -> bool {
