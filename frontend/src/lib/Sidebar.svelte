@@ -123,6 +123,7 @@
     padding: 16px 10px;
     gap: 2px;
     box-sizing: border-box;
+    overflow-y: auto;
   }
   .folders,
   .labels {
