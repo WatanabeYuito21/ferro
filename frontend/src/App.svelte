@@ -198,9 +198,8 @@
     syncStatus = { ...syncStatus, [accountId]: 'syncing…' }
     try {
       // アカウント作成時にuse_tls=falseを明示選択済みのアカウントは、
-      // 手動Syncボタンのクリック自体がその都度の平文接続opt-inとみなす
-      // （CLIの`--allow-plaintext`に相当。自動同期(background sync)は
-      // 常にfalseで呼ぶことで対象外のままにする）。
+      // それ自体が平文接続へのopt-inとみなす（CLIの`--allow-plaintext`に相当）。
+      // 背景同期も同じ理由でuse_tls=falseなら許可する（src-tauri/src/lib.rs参照）。
       const account = accounts.find((a) => a.id === accountId)
       const summary = await invoke('sync_account', {
         accountId,
