@@ -125,21 +125,31 @@
   「セッションが切れたら再接続して続きから再開する」仕組みを最初から設計に入れておくとよい
   （UIDL差分方式なら再開しても安全＝既に保存済みのメッセージは再取得されない）。実装済み
   （`ferro_core::sync`のセッションループ、`Pop3Error::ConnectionClosed`）。
-- **Tantivyの`IndexWriter`がWindarows実機で断続的に死ぬ**: `commit()`が
+- **Tantivyの`IndexWriter`がWindows実機で断続的に死ぬ**: `commit()`が
   `"An error occurred in a thread: 'An index writer was killed...'"`で失敗することがある
-  （`ferro bench`で1000〜数千件規模の索引投入を繰り返すと、体感1〜2割の頻度で再現）。
-  原因はマージ/GCワーカースレッドの異常終了とみられ、アンチウイルスのリアルタイムスキャン等に
-  よるファイルI/O競合が疑わしいが未確定。一度死んだ`IndexWriter`はそのDirectoryに対する
-  以後の`add_document`/`commit`が全て同じエラーで失敗し続ける。
-  対策として`SearchIndex`は`commit`失敗時に新しい`IndexWriter`を作り直す自己修復
-  （`recover_writer`）を持つが、**古いwriterを先にdrop（ロックファイル解放）してから
+  （`ferro bench`で1000〜数千件規模の索引投入を繰り返すと、体感1〜2割の頻度で再現。実データ
+  9万件超の環境でも実際に再現し、`fts_indexed_at`未投入が6万件超まで積み上がったことがある）。
+  原因はマージ/GCワーカースレッドの異常終了とみられ、アンチウイルス/EDR（Microsoft Defender
+  for Endpoint等）のリアルタイムスキャンによるファイルI/O競合が疑わしいが未確定。一度死んだ
+  `IndexWriter`はそのDirectoryに対する以後の`add_document`/`commit`が全て同じエラーで
+  失敗し続ける。対策として`SearchIndex`は`commit`失敗時に新しい`IndexWriter`を作り直す
+  自己修復（`recover_writer`）を持つが、**古いwriterを先にdrop（ロックファイル解放）してから
   新しいwriterを作らないと`LockFailure`になる**点に注意（一度実装を誤り、直後に修正した）。
-  `reindex_all`/`ferro bench`はバッチ単位でこの自己修復＋指数バックオフ付きリトライ
-  （最大5回）を行うが、それでも救えないケース（同一プロセス内で該当ディレクトリに対して
-  繰り返し失敗する）が残っている。真の恒久対策ではないため、`ferro reindex`等が
-  この種のエラーで失敗し続ける場合はプロセスを再起動する（`SearchIndex::open_or_create`を
-  最初からやり直す）か、`search_index`ディレクトリを削除して再構築する
-  （完全にSQLite/Maildirから再構築可能な派生キャッシュなので安全）のが実用上の回避策。
+  ワーカースレッド数が多いほどファイルI/Oの同時発生量が増えて衝突機会も増えると考えられるため、
+  `index.writer_with_num_threads(1, ...)`でシングルスレッドに固定している
+  （スループットよりも信頼性を優先。それでも根絶はできていない）。
+  `reindex_all`/`catch_up_unindexed`/`ferro bench`はバッチ単位でこの自己修復＋指数
+  バックオフ付きリトライ（最大8回、合計最大約8.4秒）を行うが、それでも救えないバッチが残る。
+  以前はそのバッチ全体を諦めて呼び出し元にエラーを伝播していたため、
+  「常に同じ先頭からN件」を返す`list_unindexed`と組み合わさると、そのバッチに永久に
+  ブロックされ、後ろにある未投入メッセージへ一生手が届かないという実害があった（実際に
+  9万件超のメールボックスで踏んだ）。現在は`reindex.rs`の`index_batch_with_fallback`が
+  バッチ全体のcommitが尽きた後1件ずつの投入にフォールバックし、`db::messages::list_unindexed`
+  も`after_id`カーソルを取るようになったため、特定のメッセージが投入不能でもその後続には
+  前進できる（`src-tauri`の`spawn_initial_search_catchup`/`step_search_catchup`がこの
+  カーソルを回す）。それでも解決しない場合の実用上の回避策は変わらず、プロセスを再起動する
+  （`SearchIndex::open_or_create`を最初からやり直す）か、`search_index`ディレクトリを
+  削除して再構築する（完全にSQLite/Maildirから再構築可能な派生キャッシュなので安全）こと。
   なお`SearchIndex::create_in_ram`（テスト専用）はこの問題を踏まない。
 
 ## 未決定・要検討事項

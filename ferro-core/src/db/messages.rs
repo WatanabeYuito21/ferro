@@ -168,18 +168,26 @@ pub fn list_all_for_reindex(
         .collect()
 }
 
-/// 検索インデックス未投入(`fts_indexed_at IS NULL`)のメッセージを古い順に一定件数返す。
-/// syncのバッチ単位commitがTantivyのIndexWriterクラッシュでリトライを使い切って
-/// 失敗した場合、そのバッチのメッセージはDB/Maildirには保存済みだが検索インデックス
-/// には入らないまま残る。`reindex::catch_up_unindexed`がこれを定期的に拾い直すために使う。
-pub fn list_unindexed(conn: &Connection, limit: u32) -> rusqlite::Result<Vec<Message>> {
+/// 検索インデックス未投入(`fts_indexed_at IS NULL`)のメッセージを、`after_id`より
+/// idが大きいものだけ古い順に一定件数返す。syncのバッチ単位commitがTantivyの
+/// IndexWriterクラッシュでリトライを使い切って失敗した場合、そのバッチのメッセージは
+/// DB/Maildirには保存済みだが検索インデックスには入らないまま残る。
+/// `reindex::catch_up_unindexed`がこれを定期的に拾い直すために使う。
+///
+/// `after_id`があるのは、同じバッチが繰り返し失敗し続けるケース（実機で確認済み。
+/// Tantivy IndexWriterクラッシュが頻発する状況では珍しくない）で、常に同じ
+/// 「先頭からN件」を返し続けると呼び出し側が永久に同じ集合でブロックされ、
+/// その後ろにある未投入メッセージに一生手が届かなくなるため。呼び出し側は
+/// 前回処理した末尾のidを`after_id`として渡すことで、成功・失敗に関わらず
+/// 前進できる（拾いきれなかった分は次の周回でafter_id=0からやり直せば再度チャンスがある）。
+pub fn list_unindexed(conn: &Connection, after_id: i64, limit: u32) -> rusqlite::Result<Vec<Message>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {MESSAGE_COLUMNS} FROM messages
-         WHERE is_deleted = 0 AND fts_indexed_at IS NULL
+         WHERE is_deleted = 0 AND fts_indexed_at IS NULL AND id > ?1
          ORDER BY id ASC
-         LIMIT ?1"
+         LIMIT ?2"
     ))?;
-    stmt.query_map([limit], row_to_message)?.collect()
+    stmt.query_map(params![after_id, limit], row_to_message)?.collect()
 }
 
 /// 検索インデックスへの投入が成功したメッセージにマークを付ける
@@ -711,6 +719,60 @@ mod tests {
                 "expected no temp b-tree sort, got plan: {plan:?}"
             );
         }
+    }
+
+    #[test]
+    fn list_unindexed_after_id_skips_earlier_messages() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let first = insert_msg(&conn, account_id, "u0", 0);
+        let second = insert_msg(&conn, account_id, "u1", 1);
+        let third = insert_msg(&conn, account_id, "u2", 2);
+
+        // after_id=0(先頭から)なら3件とも返る。
+        let all = list_unindexed(&conn, 0, 10).unwrap();
+        assert_eq!(all.iter().map(|m| m.id).collect::<Vec<_>>(), vec![first, second, third]);
+
+        // after_idに最初のメッセージのidを渡すと、それより後ろだけが返る。
+        // これにより、あるメッセージ群の投入が(Tantivy側の事情で)繰り返し
+        // 失敗しても、呼び出し側はafter_idを進めて後続を拾いに行ける
+        // （同じ先頭集合に永久にブロックされない）。
+        let after_first = list_unindexed(&conn, first, 10).unwrap();
+        assert_eq!(after_first.iter().map(|m| m.id).collect::<Vec<_>>(), vec![second, third]);
+
+        let after_all = list_unindexed(&conn, third, 10).unwrap();
+        assert!(after_all.is_empty());
+    }
+
+    #[test]
+    fn list_unindexed_query_uses_index_and_never_sorts_with_temp_btree() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        for i in 0..20 {
+            insert_msg(&conn, account_id, &format!("u{i}"), i);
+        }
+
+        let explain_sql = format!(
+            "EXPLAIN QUERY PLAN SELECT {MESSAGE_COLUMNS} FROM messages
+             WHERE is_deleted = 0 AND fts_indexed_at IS NULL AND id > ?1
+             ORDER BY id ASC
+             LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&explain_sql).unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(params![0i64, 10u32], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert!(
+            plan.iter().any(|line| line.contains("USING INDEX idx_messages_unindexed")),
+            "expected the query to use idx_messages_unindexed, got plan: {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|line| line.contains("TEMP B-TREE")),
+            "expected no temp b-tree sort, got plan: {plan:?}"
+        );
     }
 
     #[test]
