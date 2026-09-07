@@ -5,3 +5,14 @@ members = ["ferro-core", "ferro-cli", "src-tauri"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+
+# devビルドのディスク使用量対策。デフォルト(debug = 2 = フルデバッグ情報)は
+# target/debugのincremental/pdbが肥大化しやすいため、自分のクレートは行番号情報のみに、
+# 依存クレート(tantivy/native-tls等の重量級クレートを含む)はデバッグ情報無しに絞る。
+# 依存クレートのコードにブレークポイントを張ってステップ実行したい場合は
+# 一時的にこの[profile.dev.package."*"]セクションをコメントアウトすること。
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = 0
