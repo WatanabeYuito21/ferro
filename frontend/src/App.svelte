@@ -35,6 +35,10 @@
   let searchResults = null
   let searchError = ''
   let searching = false
+  let searchDebounceTimer = null
+  // 入力のたびに検索を投げるため、後から入力した検索より前の検索の応答が
+  // 遅れて返ってきて上書きしてしまう競合を避ける（最新のリクエストIDだけ反映する）。
+  let searchRequestId = 0
 
   let selectedMessageId = null
 
@@ -215,24 +219,46 @@
     }
   }
 
-  async function runSearch() {
-    if (!searchQuery.trim()) return
+  const SEARCH_DEBOUNCE_MS = 250
+
+  function onSearchInput() {
+    clearTimeout(searchDebounceTimer)
+    const query = searchQuery.trim()
+    if (!query) {
+      // 空になったら直前にスケジュール済みの検索も含めて即座に一覧表示へ戻す。
+      searchRequestId += 1
+      searchResults = null
+      searchError = ''
+      searching = false
+      return
+    }
     searching = true
-    searchError = ''
+    searchDebounceTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS)
+  }
+
+  async function runSearch(query) {
+    const requestId = ++searchRequestId
     try {
-      searchResults = await invoke('search_messages', { query: searchQuery, limit: 50 })
+      const results = await invoke('search_messages', { query, limit: 50 })
+      if (requestId !== searchRequestId) return // より新しい検索が既に走っている
+      searchResults = results
+      searchError = ''
     } catch (e) {
+      if (requestId !== searchRequestId) return
       searchError = String(e)
       searchResults = []
     } finally {
-      searching = false
+      if (requestId === searchRequestId) searching = false
     }
   }
 
   function clearSearch() {
+    clearTimeout(searchDebounceTimer)
+    searchRequestId += 1
     searchQuery = ''
     searchResults = null
     searchError = ''
+    searching = false
   }
 </script>
 
@@ -273,13 +299,19 @@
         />
       {:else}
         <section>
-            <form class="search-bar" on:submit|preventDefault={runSearch}>
-              <input placeholder="件名/差出人/本文を検索…" bind:value={searchQuery} />
-              <button type="submit" disabled={searching || !searchQuery.trim()}>検索</button>
+            <div class="search-bar">
+              <input
+                placeholder="件名/差出人/本文を検索…"
+                bind:value={searchQuery}
+                on:input={onSearchInput}
+              />
+              {#if searching}
+                <span class="search-spinner">検索中…</span>
+              {/if}
               {#if searchResults !== null}
                 <button type="button" on:click={clearSearch}>クリア</button>
               {/if}
-            </form>
+            </div>
             {#if searchError}
               <p class="error">{searchError}</p>
             {/if}
@@ -367,12 +399,6 @@
     flex: 1 1 420px;
     min-width: 0;
   }
-  form {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: center;
-  }
   .error {
     color: var(--danger);
   }
@@ -380,6 +406,10 @@
     margin-bottom: 1rem;
   }
   .search-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
     margin-bottom: 0.75rem;
   }
   .search-bar input {
@@ -399,6 +429,10 @@
     font: inherit;
     font-size: 12.5px;
     cursor: pointer;
+  }
+  .search-spinner {
+    color: var(--text-muted);
+    font-size: 12.5px;
   }
   .search-bar button:hover {
     background: var(--surface-muted);
