@@ -641,9 +641,10 @@ fn current_sync_interval(app_handle: &AppHandle) -> Duration {
 /// （ferro-coreの同期処理は同期(ブロッキング)関数なので、tokioワーカースレッドを
 /// 塞がないよう素のstd::threadを使う）。
 ///
-/// `allow_plaintext`は常にfalseで呼ぶ: ユーザーが手動でSyncボタンを押した
-/// わけではない自動実行で、平文接続の暗黙的な選択はしない
-/// （`use_tls=false`のアカウントは自動同期の対象外になり、手動同期のみ届く）。
+/// `allow_plaintext`は`!account.use_tls`で決める: 平文専用アカウント自体が
+/// アカウント作成時にユーザーが明示的に選んだ設定（CLAUDE.md参照）なので、
+/// それを自動同期でも尊重する（以前は自動実行では常に`allow_plaintext=false`にして
+/// 手動Syncのみに絞っていたが、ユーザーの要望により平文アカウントも自動同期の対象にした）。
 ///
 /// 間隔は`current_sync_interval`で毎サイクル読み直す。設定変更は次のサイクルから
 /// 反映される（実行中のsleepを割り込んで即座反映するような仕組みは持たない。
@@ -709,13 +710,6 @@ fn run_background_sync_once(app_handle: &AppHandle) {
     };
 
     for account in accounts {
-        // use_tls=falseのアカウントは自動同期の対象外（手動Syncのみ）。
-        // ここでスキップしないとsync_account_with_limitがallow_plaintext=falseで
-        // 弾かれるだけになり、想定内の挙動なのに毎回"エラー"としてGUIに表示されてしまう。
-        if !account.use_tls {
-            continue;
-        }
-
         let event = match credentials::get_password(account.id) {
             Err(e) => BackgroundSyncEvent {
                 account_id: account.id,
@@ -732,7 +726,7 @@ fn run_background_sync_once(app_handle: &AppHandle) {
                     &paths::maildir_dir(),
                     &account,
                     &password,
-                    false,
+                    !account.use_tls,
                     Some(BACKGROUND_SYNC_LIMIT),
                     &state.search_index,
                     |fetched, total| {
