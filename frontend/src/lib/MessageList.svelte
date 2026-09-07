@@ -151,7 +151,8 @@
 
 <style>
   .viewport {
-    height: 560px;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     position: relative;
     border: 1px solid var(--border);
