@@ -395,6 +395,7 @@
     padding: 20px 24px;
     display: flex;
     flex-direction: column;
+    overflow-y: auto;
   }
   .messages-view {
     flex: 1;
