@@ -18,8 +18,16 @@
   let error = ''
   let syncStatus = {}
   // MessageListの`{#key}`に渡し、値が変わるたびにコンポーネントを
-  // 作り直させることで、syncで増えたメッセージを最初のページから読み直させる。
+  // 作り直させることで、最初のページから読み直させる（スクロール位置は失われる）。
   let messageListRefreshToken = 0
+
+  // バックグラウンド同期で新着があっても、読んでいる途中でいきなり一覧の
+  // スクロール位置がリセットされると使い勝手が悪いという指摘を受けて、
+  // background-sync受信時はmessageListRefreshTokenを即座には動かさず、
+  // 代わりにこの件数を積み上げて「新着があります」バナーで知らせるだけにする
+  // （実際に一覧を作り直す＝スクロール位置がリセットされるのは、ユーザーが
+  // バナーをクリックした時だけ）。
+  let newMailCount = 0
 
   // サイドバーで選ぶフォルダ/ラベル。フォルダとラベルはどちらか一方だけを選ぶ
   // （ラベルを選んだらselectedLabelIdが優先され、MessageListはfolderを無視する）。
@@ -94,12 +102,22 @@
     selectedFolder = key
     selectedLabelId = null
     selectedMessageId = null
+    newMailCount = 0
   }
 
   function selectLabel(labelId) {
     currentView = 'messages'
     selectedLabelId = labelId
     selectedMessageId = null
+    newMailCount = 0
+  }
+
+  // 「新着があります」バナーがクリックされた時だけ、実際に一覧を最初のページから
+  // 作り直す（この時だけスクロール位置がリセットされる。ユーザー自身の操作なので、
+  // 突然リセットされるのとは違い違和感が無い）。
+  function refreshMessageListForNewMail() {
+    messageListRefreshToken += 1
+    newMailCount = 0
   }
 
   async function createLabel({ name, color }) {
@@ -159,7 +177,7 @@
         [account_id]: `background sync: fetched ${fetched}, ${remaining} remaining${extra}`,
       }
       if (fetched > 0) {
-        messageListRefreshToken += 1
+        newMailCount += fetched
         refreshFolderCounts()
       }
     })
@@ -341,6 +359,12 @@
               <p class="error">{searchError}</p>
             {/if}
 
+            {#if searchResults === null && selectedFolder === 'inbox' && selectedLabelId === null && newMailCount > 0}
+              <button type="button" class="new-mail-banner" on:click={refreshMessageListForNewMail}>
+                新着メッセージが{newMailCount}件あります（クリックで表示）
+              </button>
+            {/if}
+
             <div class="messages-layout">
               <div class="list-pane">
                 {#if searchResults !== null}
@@ -484,6 +508,25 @@
   .search-spinner {
     color: var(--text-muted);
     font-size: 12.5px;
+  }
+  .new-mail-banner {
+    display: block;
+    width: 100%;
+    margin-bottom: 0.75rem;
+    padding: 8px 14px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--accent-soft-bg);
+    color: var(--accent-hover);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+  }
+  .new-mail-banner:hover {
+    background: var(--accent-soft-bg);
+    border-color: var(--accent-hover);
   }
   .search-bar button:hover {
     background: var(--surface-muted);
