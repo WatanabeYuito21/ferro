@@ -5,6 +5,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import { untrack } from 'svelte'
   import { matchColor } from './colorRules.js'
+  import { formatDate } from './formatDate.js'
 
   // labelIdが指定されているときはfolderを無視してラベル一覧を表示する
   // （サイドバーはフォルダかラベルのどちらか一方を選ぶ設計）。
@@ -88,14 +89,6 @@
   let topOffset = $derived(startIndex * ROW_HEIGHT)
   let totalHeight = $derived(items.length * ROW_HEIGHT)
 
-  function formatDate(unixSeconds) {
-    const d = new Date(unixSeconds * 1000)
-    const now = new Date()
-    if (d.toDateString() === now.toDateString()) {
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }
-    return d.toLocaleDateString()
-  }
 </script>
 
 <div class="viewport" bind:clientHeight={viewportHeight} onscroll={onScroll}>
