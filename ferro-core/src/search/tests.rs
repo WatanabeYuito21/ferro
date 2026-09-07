@@ -89,6 +89,34 @@ fn japanese_text_is_searchable_by_substring() {
     assert!(index.search("存在しない単語", 10).unwrap().is_empty());
 }
 
+/// 「検索が単語検索っぽい」＝英数字は単語全体の完全一致でしかヒットしない、
+/// という指摘への対応（`cjk_tokenizer`のドキュメント参照）。英数字もCJKと
+/// 同じくバイグラム化したことで、単語の一部分だけの入力でもヒットするように
+/// なったことを確認する。バイグラムはトークン化時の位置(position)込みで
+/// フレーズクエリとして評価されるため、「crit」の3バイグラム(cr/ri/it)が
+/// たまたまバラバラに存在するだけの無関係な文書までヒットする、ということは
+/// 起きない（cranberry/riddle/fitnessはcr・ri・itをそれぞれ含むが、
+/// 「crit」という並びでは一度も現れないためヒットしない）。
+#[test]
+fn english_substring_query_matches_part_of_a_word_but_not_scattered_fragments() {
+    let index = SearchIndex::create_in_ram().unwrap();
+
+    index
+        .index_message(&sample(1, "Critical alert", "a a@example.com", "the service is critical"))
+        .unwrap();
+    index
+        .index_message(&sample(
+            2,
+            "unrelated",
+            "b b@example.com",
+            "cranberry riddle fitness happen to contain the same fragments scattered apart",
+        ))
+        .unwrap();
+    index.commit().unwrap();
+
+    assert_eq!(index.search("crit", 10).unwrap(), vec![1]);
+}
+
 /// `QueryParser`はデフォルトだとOR結合で、CJKバイグラムトークナイザは
 /// クエリ自体も複数の2文字片に分割するため、OR結合のままだと「クエリの
 /// バイグラムのうちどれか1つでも含む文書」までヒットしてノイズだらけになる
