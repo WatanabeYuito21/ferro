@@ -127,6 +127,7 @@ fn sync_respects_limit_and_resumes_next_call() {
         true,
         Some(2),
         &search_index,
+        |_, _| {},
     )
     .unwrap();
     assert_eq!(
@@ -158,6 +159,7 @@ fn sync_respects_limit_and_resumes_next_call() {
         true,
         None,
         &search_index,
+        |_, _| {},
     )
     .unwrap();
     assert_eq!(
@@ -199,6 +201,7 @@ fn sync_is_idempotent_when_nothing_new() {
         true,
         None,
         &search_index,
+        |_, _| {},
     )
     .unwrap();
     let summary = sync_account_with_limit(
@@ -209,6 +212,7 @@ fn sync_is_idempotent_when_nothing_new() {
         true,
         None,
         &search_index,
+        |_, _| {},
     )
     .unwrap();
     assert_eq!(
@@ -252,6 +256,7 @@ fn sync_reconnects_after_mid_pipeline_disconnect() {
         true,
         None,
         &search_index,
+        |_, _| {},
     )
     .unwrap();
 

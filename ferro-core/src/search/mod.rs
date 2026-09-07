@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
@@ -41,6 +42,39 @@ pub enum SearchError {
 }
 
 pub type Result<T> = std::result::Result<T, SearchError>;
+
+/// commit失敗時のリトライ回数上限。
+/// 元は5回・base 100ms（合計最大1秒待機）だったが、実機で依然として
+/// リトライを使い切ってエラーが表面化するケースが確認されたため、
+/// アンチウイルス/EDR（Microsoft Defender for Endpoint等）のリアルタイム
+/// スキャン・振る舞い監視が数秒かかる想定に合わせて広げた（合計最大約8.4秒）。
+/// 読み取り系コマンドは別接続(`read_conn`)なので、この待機はsync/reindexの
+/// 呼び出し自体を長引かせるだけでアプリ全体をブロックしない。
+const MAX_COMMIT_ATTEMPTS: u32 = 8;
+/// リトライ間隔のベース（試行回数に比例させる簡易的な指数バックオフ）。
+const RETRY_BASE_DELAY: Duration = Duration::from_millis(300);
+
+/// Windows実機で断続的に起きるTantivyの`IndexWriter`クラッシュ
+/// （`SearchIndex::commit`のドキュメント参照。アンチウイルスのリアルタイムスキャン等
+/// によるファイルI/O競合が疑わしいが未確定）を吸収するための共通リトライヘルパー。
+/// `reindex_all`と`sync`の両方の呼び出し元で使う。
+///
+/// `f`は「索引投入からcommitまでの一連の処理」を丸ごと再実行可能な形で渡すこと。
+/// `commit`が失敗すると`recover_writer`で新しいwriterに差し替わり、直前の
+/// `add_document`分は失われるため、呼び出し側は同じ内容を最初からやり直す必要がある。
+pub fn with_commit_retry<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut last_err = None;
+    for attempt in 0..MAX_COMMIT_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(RETRY_BASE_DELAY * attempt);
+        }
+        match f() {
+            Ok(value) => return Ok(value),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.expect("loop runs MAX_COMMIT_ATTEMPTS >= 1 times"))
+}
 
 struct Fields {
     id: Field,
@@ -142,8 +176,17 @@ impl SearchIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        let query_parser =
+        let mut query_parser =
             QueryParser::for_index(&index, vec![fields.subject, fields.from, fields.body]);
+        // デフォルトはOR結合だが、CJKバイグラムトークナイザは1クエリを複数の
+        // 2文字片に分割するため、OR結合だと「入力した語句のうちどれか1片でも
+        // 一致すればヒット」になってしまい、ノイズの多い検索結果になる
+        // （実際に「検索精度が低い」という形で踏んだ）。AND結合にして、
+        // クエリを構成する全ての片が含まれる文書だけを返すようにする。
+        query_parser.set_conjunction_by_default();
+        // 件名・差出人の一致を本文一致より優先して上位に出す。
+        query_parser.set_field_boost(fields.subject, 3.0);
+        query_parser.set_field_boost(fields.from, 2.0);
 
         Ok(SearchIndex {
             index,

@@ -81,6 +81,8 @@ fn insert_messages(
                 to_addr: None,
                 date_header: base_time - i as i64,
                 size_bytes: 0,
+                attachment_count: 0,
+                preview: None,
             },
         )?;
         inserted_since_commit += 1;

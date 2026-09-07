@@ -5,14 +5,24 @@ use rusqlite::Connection;
 use crate::db::accounts::Account;
 use crate::db::messages::{self, NewMessage};
 use crate::db::now_unix;
+use crate::mail::attachments;
 use crate::mail::parse::parse_full;
 use crate::maildir;
 use crate::pop3::{Pop3Client, Pop3Error};
-use crate::search::{IndexableMessage, SearchError, SearchIndex};
+use crate::search::{IndexableMessage, SearchError, SearchIndex, with_commit_retry};
 
 /// RETRをまとめて送ってから順に読む単位。実サーバーで大きすぎると
 /// 切断されることがあるため、CLAUDE.mdの実測に基づき20件に固定している。
 const RETR_BATCH_SIZE: usize = 20;
+
+/// 検索インデックスへの`commit`をまとめる単位。RETR_BATCH_SIZEとは独立に、
+/// これだけメッセージが溜まってから初めてTantivyへcommitする。
+/// Tantivyの`IndexWriter`クラッシュ（`with_commit_retry`のドキュメント参照）は
+/// 低確率とはいえcommit呼び出し1回ごとに当たりうるため、RETR_BATCH_SIZE(20件)
+/// ごとにcommitしていると数万件規模のメールボックスでは数千回commitすることになり、
+/// どこかでリトライを使い切る確率が積み重なってしまう（実機で実際に踏んだ）。
+/// commit頻度自体をここで大きく減らし、遭遇回数そのものを減らす。
+const SEARCH_COMMIT_BATCH_SIZE: usize = 500;
 
 /// 1回の同期呼び出しで許容する再接続回数の上限。これを超えたら諦めて
 /// 途中経過を返す（UIDL差分方式なので次回のsync呼び出しで安全に続きから拾われる）。
@@ -44,6 +54,12 @@ pub struct SyncSummary {
 /// `limit`件まで（Noneなら無制限）。パイプライン化したRETR中に実サーバーが
 /// 接続を切断することがあるため、その場合は再接続して続きから再開する
 /// （UIDL差分方式のため、既に保存済みのメッセージは再取得されず安全）。
+///
+/// `on_progress(fetched_so_far, target_total)`は1バッチ（`RETR_BATCH_SIZE`件）
+/// 完了するごとに呼ばれる。呼び出し側（GUI/CLI）が"30/1000"のような進捗表示に使う。
+/// `target_total`は今回のsync呼び出しで取得予定の件数（`fetched_so_far`にこの回で
+/// 既に取得できた分を加えたもの）で、再接続をまたぐと（UIDL差分を取り直すため）
+/// 変わることがある。
 #[allow(clippy::too_many_arguments)]
 pub fn sync_account_with_limit(
     conn: &Connection,
@@ -53,6 +69,7 @@ pub fn sync_account_with_limit(
     allow_plaintext: bool,
     limit: Option<u32>,
     search_index: &SearchIndex,
+    mut on_progress: impl FnMut(u32, u32),
 ) -> Result<SyncSummary, SyncError> {
     let mut total_fetched = 0u32;
     let mut budget = limit;
@@ -85,6 +102,7 @@ pub fn sync_account_with_limit(
         }
 
         let take = budget.map_or(pending.len(), |b| (b as usize).min(pending.len()));
+        let target_total = total_fetched + take as u32;
         let (fetched_now, session_broken) = fetch_and_store(
             conn,
             maildir_base,
@@ -92,6 +110,9 @@ pub fn sync_account_with_limit(
             account.id,
             &pending[..take],
             search_index,
+            total_fetched,
+            target_total,
+            &mut on_progress,
         )?;
         let _ = client.quit();
 
@@ -120,11 +141,57 @@ pub fn sync_account_with_limit(
     }
 }
 
+/// 検索インデックス投入待ちのメッセージ1件分。`with_commit_retry`でバッチ丸ごと
+/// 再実行できるよう、パース結果(`raw`を借用する`ParsedMail`)から切り離した
+/// 所有データとして保持する。
+struct PendingIndex {
+    id: i64,
+    subject: String,
+    from: String,
+    body: String,
+}
+
+/// 溜まった`pending`を検索インデックスへ投入してcommitする
+/// （`with_commit_retry`で自己修復＋リトライ）。成功したら`messages::mark_indexed`で
+/// `fts_indexed_at`を記録してから`pending`を空にする（`with_commit_retry`が
+/// リトライを使い切って失敗した場合はmark_indexedを呼ばず`fts_indexed_at`をNULLの
+/// ままにしておくことで、`reindex::catch_up_unindexed`が後から自動的に拾い直せる）。
+fn flush_pending_index(
+    conn: &Connection,
+    search_index: &SearchIndex,
+    pending: &mut Vec<PendingIndex>,
+) -> Result<(), SyncError> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    with_commit_retry(|| -> crate::search::Result<()> {
+        for item in pending.iter() {
+            search_index.index_message(&IndexableMessage {
+                id: item.id,
+                subject: &item.subject,
+                from: &item.from,
+                body: &item.body,
+            })?;
+        }
+        search_index.commit()
+    })?;
+    let ids: Vec<i64> = pending.iter().map(|item| item.id).collect();
+    messages::mark_indexed(conn, &ids)?;
+    pending.clear();
+    Ok(())
+}
+
 /// `items`をRETR_BATCH_SIZE単位でパイプライン取得し、Maildirへの保存とDBへの
 /// 挿入をバッチ単位のトランザクションでまとめて行う。
 /// 戻り値は(このセッションで取得できた件数, セッションが切断されたか)。
 /// 切断は`Pop3Error::Io`/`ConnectionClosed`でのみ検出し、それ以外のエラー
 /// （プロトコルエラー等）は復旧不能として呼び出し側にそのまま伝播する。
+///
+/// 検索インデックスへの投入はDBトランザクションのcommit後に`pending_index`へ
+/// 貯め、`SEARCH_COMMIT_BATCH_SIZE`件溜まるごと・接続切断時・関数の終わりに
+/// まとめて`flush_pending_index`でTantivyへcommitする
+/// （`SEARCH_COMMIT_BATCH_SIZE`のドキュメント参照）。
+#[allow(clippy::too_many_arguments)]
 fn fetch_and_store(
     conn: &Connection,
     maildir_base: &Path,
@@ -132,28 +199,32 @@ fn fetch_and_store(
     account_id: i64,
     items: &[(u32, String)],
     search_index: &SearchIndex,
+    already_fetched: u32,
+    target_total: u32,
+    on_progress: &mut dyn FnMut(u32, u32),
 ) -> Result<(u32, bool), SyncError> {
     let mut fetched = 0u32;
+    let mut pending_index: Vec<PendingIndex> = Vec::new();
 
     for batch in items.chunks(RETR_BATCH_SIZE) {
         let msg_nums: Vec<u32> = batch.iter().map(|(num, _)| *num).collect();
         let results = match client.retr_batch(&msg_nums) {
             Ok(results) => results,
-            Err(e) if is_disconnect(&e) => return Ok((fetched, true)),
+            Err(e) if is_disconnect(&e) => {
+                flush_pending_index(conn, search_index, &mut pending_index)?;
+                return Ok((fetched, true));
+            }
             Err(e) => return Err(e.into()),
         };
 
         let tx = conn.unchecked_transaction()?;
-        let mut indexed_in_batch = false;
+        let mut disconnected = false;
         for ((_, uidl), result) in batch.iter().zip(results) {
             let raw = match result {
                 Ok(raw) => raw,
                 Err(e) if is_disconnect(&e) => {
-                    tx.commit()?;
-                    if indexed_in_batch {
-                        search_index.commit()?;
-                    }
-                    return Ok((fetched, true));
+                    disconnected = true;
+                    break;
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -161,6 +232,11 @@ fn fetch_and_store(
             maildir::store(maildir_base, account_id, uidl, &raw)?;
 
             let parsed = parse_full(&raw);
+            // 一覧に添付件数チップ/プレビュー行を表示するため、sync時に一度だけ計算して
+            // 保存しておく(一覧描画のたびにMaildirを読み直すのはCLAUDE.mdの
+            // 「起動時に何も舐めない」方針に反するため)。
+            let attachment_count = attachments::list_attachments(&raw).len() as i64;
+            let preview = make_preview(parsed.body.as_deref());
             let new_id = messages::insert_new(
                 &tx,
                 &NewMessage {
@@ -173,6 +249,8 @@ fn fetch_and_store(
                     to_addr: parsed.headers.to_addr.as_deref(),
                     date_header: parsed.headers.date_header.unwrap_or_else(now_unix),
                     size_bytes: raw.len() as i64,
+                    attachment_count,
+                    preview: preview.as_deref(),
                 },
             )?;
 
@@ -182,23 +260,42 @@ fn fetch_and_store(
                     parsed.headers.from_name.as_deref().unwrap_or(""),
                     parsed.headers.from_addr.as_deref().unwrap_or("")
                 );
-                search_index.index_message(&IndexableMessage {
+                pending_index.push(PendingIndex {
                     id,
-                    subject: parsed.headers.subject.as_deref().unwrap_or(""),
-                    from: &from,
-                    body: parsed.body.as_deref().unwrap_or(""),
-                })?;
-                indexed_in_batch = true;
+                    subject: parsed.headers.subject.as_deref().unwrap_or("").to_string(),
+                    from,
+                    body: parsed.body.as_deref().unwrap_or("").to_string(),
+                });
             }
             fetched += 1;
         }
         tx.commit()?;
-        if indexed_in_batch {
-            search_index.commit()?;
+
+        if pending_index.len() >= SEARCH_COMMIT_BATCH_SIZE {
+            flush_pending_index(conn, search_index, &mut pending_index)?;
+        }
+
+        on_progress(already_fetched + fetched, target_total);
+
+        if disconnected {
+            flush_pending_index(conn, search_index, &mut pending_index)?;
+            return Ok((fetched, true));
         }
     }
 
+    flush_pending_index(conn, search_index, &mut pending_index)?;
     Ok((fetched, false))
+}
+
+/// 一覧のプレビュー行用に、本文冒頭を改行を潰した1行・最大120文字に切り詰める。
+/// マルチバイト文字境界で壊れないよう`chars()`単位で切る。
+fn make_preview(body: Option<&str>) -> Option<String> {
+    const MAX_CHARS: usize = 120;
+    let collapsed: String = body?.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(MAX_CHARS).collect())
 }
 
 fn is_disconnect(err: &Pop3Error) -> bool {
