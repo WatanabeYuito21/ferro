@@ -260,6 +260,9 @@
 
 <style>
   .detail {
+    height: 100%;
+    box-sizing: border-box;
+    overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 1.25rem;
@@ -405,8 +408,6 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.9rem;
-    max-height: 360px;
-    overflow-y: auto;
     font-size: 13.5px;
     line-height: 1.8;
     color: #2e2c27;

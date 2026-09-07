@@ -298,7 +298,7 @@
           }}
         />
       {:else}
-        <section>
+        <section class="messages-view">
             <div class="search-bar">
               <input
                 placeholder="件名/差出人/本文を検索…"
@@ -367,11 +367,18 @@
 
 <style>
   main {
-    margin: 1rem;
+    margin: 0;
+    height: 100%;
+    padding: 1rem;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
   }
   .app-layout {
     display: flex;
-    align-items: flex-start;
+    align-items: stretch;
+    flex: 1;
+    min-height: 0;
     gap: 0;
     border: 1px solid var(--border);
     border-radius: 14px;
@@ -384,20 +391,35 @@
   .main-content {
     flex: 1;
     min-width: 0;
+    min-height: 0;
     padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+  }
+  .messages-view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
   .messages-layout {
     display: flex;
-    align-items: flex-start;
+    align-items: stretch;
+    flex: 1;
+    min-height: 0;
     gap: 1rem;
   }
   .list-pane {
     flex: 1.2 1 420px;
     min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
   .detail-pane {
     flex: 1 1 420px;
     min-width: 0;
+    min-height: 0;
   }
   .error {
     color: var(--danger);
@@ -443,7 +465,8 @@
     padding: 0;
     border: 1px solid var(--border);
     border-radius: 8px;
-    max-height: 560px;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     background: var(--surface-subtle);
   }
