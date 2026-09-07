@@ -339,6 +339,18 @@ impl SearchIndex {
             })
             .collect()
     }
+
+    /// 現在インデックスに入っている文書数。GUI起動時に、DBの`fts_indexed_at`は
+    /// 「投入済み」を指しているのにインデックス自体は空、という不整合
+    /// （スキーマ変更での自己修復や、`search_index`ディレクトリの手動削除
+    /// ―CLAUDE.md記載の回避策―の直後に起きうる。`fts_indexed_at`はSQLite側の
+    /// 列でTantivy側の状態とは独立しているため、インデックスだけが消えても
+    /// この列は古い値のままになり、自動キャッチアップの対象からも外れて
+    /// しまう。実際にこの不整合で検索が壊れたままになる不具合を踏んだ）を
+    /// 検知するために使う（`src-tauri`の起動処理参照）。
+    pub fn num_docs(&self) -> u64 {
+        self.reader.searcher().num_docs()
+    }
 }
 
 fn open_mmap_dir(path: &Path) -> tantivy::Result<MmapDirectory> {

@@ -857,6 +857,31 @@ pub fn run() {
     let search_index =
         SearchIndex::open_or_create(&paths::search_index_dir()).expect("failed to open search index");
 
+    // 検索インデックスの文書数が、DBが「投入済み」と認識している件数より少ない場合、
+    // 自己修復不能な不整合（`db::messages::reset_all_fts_indexed`のドキュメント参照。
+    // スキーマ変更での自動再構築や`search_index`ディレクトリの手動削除の直後に起きうる。
+    // 実際にこれで検索が壊れたまま治らなくなる不具合を踏んだ）なので、全件を
+    // 再投入対象に戻す。単純に`num_docs() == 0`だけを見ると、インデックスが
+    // 消えた後に新着メールだけは正常に投入され続けて`num_docs()`が0でなくなり、
+    // 大半を占める既存メールの欠落を二度と検知できなくなる（実際に踏んだ）ため、
+    // DB側の件数との比較にしている。
+    match db::messages::count_indexed(&write_conn) {
+        Ok(indexed_count) if indexed_count > search_index.num_docs() as i64 => {
+            match db::messages::reset_all_fts_indexed(&write_conn) {
+                Ok(0) => {}
+                Ok(n) => eprintln!(
+                    "warning: search index has fewer documents ({}) than the DB expected \
+                     ({indexed_count}); resetting {n} message(s) so the background catch-up \
+                     rebuilds the index",
+                    search_index.num_docs()
+                ),
+                Err(e) => eprintln!("warning: failed to reset fts_indexed_at: {e}"),
+            }
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("warning: failed to check indexed message count: {e}"),
+    }
+
     // accounts.tomlが正の情報源。存在すれば起動時にDBへ反映する（無ければ空扱い）。
     // 手編集ファイルの構文ミス等でここが失敗してもGUI自体は起動させる
     // （直近の反映結果＝DBの内容のまま起動し、修正後は`reload_accounts_config`
