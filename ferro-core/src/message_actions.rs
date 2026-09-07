@@ -82,6 +82,7 @@ mod tests {
                 subject: "findable",
                 from: "",
                 body: "",
+                date_header: 1000,
             })
             .unwrap();
         search_index.commit().unwrap();

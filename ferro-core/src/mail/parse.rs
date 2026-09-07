@@ -64,6 +64,24 @@ pub fn extract_plain_text_body(raw: &[u8]) -> Option<String> {
     message.body_text(0).map(|body| body.into_owned())
 }
 
+/// 一覧のプレビュー行用に、本文冒頭を改行を潰した1行に切り詰める。
+/// マルチバイト文字境界で壊れないよう`chars()`単位で切る。
+///
+/// 表示上は一覧の行の`text-overflow: ellipsis`でどのみち1行分しか見えないが、
+/// この値は色分けルール（`ColorRule`）のマッチ対象としても使われる（実体を毎回
+/// Maildirから読み直すのは「起動時に何も舐めない」方針に反するため、一覧描画時に
+/// 使えるのはこのフィールドだけ）。Nagios等の監視アラートメールは本文が長く、
+/// 短すぎると肝心のキーワードが切り詰められた先にあって色分けルールが効かない
+/// ことがある（実際に踏んだ）ため、単なる表示用プレビューよりやや余裕を持たせている。
+pub fn make_preview(body: Option<&str>) -> Option<String> {
+    const MAX_CHARS: usize = 500;
+    let collapsed: String = body?.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(MAX_CHARS).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +136,16 @@ mod tests {
         let parsed = parse_full(SAMPLE_MESSAGE);
         assert_eq!(parsed.headers.subject.as_deref(), Some("Hello"));
         assert_eq!(parsed.body.as_deref(), Some("body text"));
+    }
+
+    #[test]
+    fn make_preview_collapses_whitespace_and_truncates() {
+        assert_eq!(make_preview(Some("hello   \n world")).as_deref(), Some("hello world"));
+        assert_eq!(make_preview(None), None);
+        assert_eq!(make_preview(Some("   ")), None);
+
+        let long_body = "a".repeat(600);
+        let preview = make_preview(Some(&long_body)).unwrap();
+        assert_eq!(preview.chars().count(), 500);
     }
 }

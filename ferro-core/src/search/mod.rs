@@ -14,10 +14,10 @@ use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{QueryParser, QueryParserError};
 use tantivy::schema::{
-    Field, INDEXED, IndexRecordOption, STORED, Schema, TextFieldIndexing, TextOptions, Value,
+    FAST, Field, INDEXED, IndexRecordOption, STORED, Schema, TextFieldIndexing, TextOptions, Value,
 };
 use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, TextAnalyzer};
-use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, Term, doc};
+use tantivy::{Index, IndexReader, IndexWriter, Order, ReloadPolicy, Term, doc};
 
 mod cjk_tokenizer;
 use cjk_tokenizer::CjkBigramTokenizer;
@@ -26,6 +26,10 @@ use cjk_tokenizer::CjkBigramTokenizer;
 /// （`QueryParser`もクエリ文字列を索引投入時と同じトークナイザで分割するため、
 /// フィールドに設定した名前がインデックスの`TokenizerManager`に登録されている必要がある）。
 const TOKENIZER_NAME: &str = "ferro_cjk_bigram";
+
+/// 検索結果の並び順に使う日付フィールドの名前（`order_by_u64_field`はField
+/// ハンドルではなくスキーマ上の名前で指定するAPIのため文字列定数にしておく）。
+const DATE_HEADER_FIELD_NAME: &str = "date_header";
 
 #[derive(Debug, thiserror::Error)]
 pub enum SearchError {
@@ -81,6 +85,7 @@ struct Fields {
     subject: Field,
     from: Field,
     body: Field,
+    date_header: Field,
 }
 
 /// 日本語（分かち書きしない言語）を含むテキスト用のフィールドオプション。
@@ -100,8 +105,14 @@ fn build_schema() -> (Schema, Fields) {
     let subject = builder.add_text_field("subject", cjk_text_options(true));
     let from = builder.add_text_field("from", cjk_text_options(true));
     let body = builder.add_text_field("body", cjk_text_options(false));
+    // 検索結果は関連度ではなく常に受信日時の新しい順で返す（`search`のドキュメント
+    // 参照）。ソートにしか使わないのでFASTのみで十分（INDEXED/STOREDは不要）。
+    let date_header = builder.add_u64_field(DATE_HEADER_FIELD_NAME, FAST);
     let schema = builder.build();
-    (schema, Fields { id, subject, from, body })
+    (
+        schema,
+        Fields { id, subject, from, body, date_header },
+    )
 }
 
 fn register_tokenizer(index: &Index) {
@@ -121,6 +132,9 @@ pub struct IndexableMessage<'a> {
     /// 表示名・アドレス両方をまとめて検索対象にする（例: "Alice alice@example.com"）。
     pub from: &'a str,
     pub body: &'a str,
+    /// 検索結果の並び順(新しい順)に使う。Unixエポック秒。負の値は想定していない
+    /// （`messages.date_header`は実質常に1970年以降の値）。
+    pub date_header: i64,
 }
 
 pub struct SearchIndex {
@@ -190,9 +204,10 @@ impl SearchIndex {
         // （実際に「検索精度が低い」という形で踏んだ）。AND結合にして、
         // クエリを構成する全ての片が含まれる文書だけを返すようにする。
         query_parser.set_conjunction_by_default();
-        // 件名・差出人の一致を本文一致より優先して上位に出す。
-        query_parser.set_field_boost(fields.subject, 3.0);
-        query_parser.set_field_boost(fields.from, 2.0);
+        // 検索結果は関連度スコアではなく常に受信日時の新しい順（`search`参照）で
+        // 返すため、スコアにしか効かない`set_field_boost`は使わない
+        // （以前は件名/差出人を優先する目的で設定していたが、並び順を日付に
+        // 変えたことで意味が無くなった）。
 
         Ok(SearchIndex {
             index,
@@ -236,6 +251,7 @@ impl SearchIndex {
             self.fields.subject => message.subject,
             self.fields.from => message.from,
             self.fields.body => message.body,
+            self.fields.date_header => message.date_header as u64,
         ))?;
         Ok(())
     }
@@ -293,15 +309,25 @@ impl SearchIndex {
         }
     }
 
-    /// クエリにマッチする`messages.id`を関連度順で返す。
+    /// クエリにマッチする`messages.id`を受信日時の新しい順で返す。
+    ///
+    /// 以前は関連度スコア順だったが、「検索しても新しい順に並ばない」という
+    /// 指摘を受けて日付順に変更した。並び替えは`TopDocs`の収集段階
+    /// (`order_by_u64_field`)で行うため、AND結合でマッチした文書が`limit`件を
+    /// 超える場合でも、関連度が高いが古いものに押し出されて新しいものが
+    /// 一覧から漏れる、ということが起きない（マッチした全文書のうち常に
+    /// 一番新しいlimit件を返す）。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<i64>> {
         let searcher = self.reader.searcher();
         let query = self.query_parser.parse_query(query)?;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(limit).order_by_score())?;
+        let top_docs = searcher.search(
+            &query,
+            &TopDocs::with_limit(limit).order_by_u64_field(DATE_HEADER_FIELD_NAME, Order::Desc),
+        )?;
 
         top_docs
             .into_iter()
-            .map(|(_score, doc_address)| {
+            .map(|(_date_header, doc_address)| {
                 let doc: tantivy::TantivyDocument = searcher.doc(doc_address)?;
                 let id = doc
                     .get_first(self.fields.id)

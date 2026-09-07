@@ -2,7 +2,8 @@ use std::path::Path;
 
 use crate::db::Connection;
 use crate::db::messages;
-use crate::mail::parse::extract_plain_text_body;
+use crate::mail::attachments;
+use crate::mail::parse::{extract_plain_text_body, make_preview};
 use crate::maildir;
 use crate::search::{IndexableMessage, SearchError, SearchIndex, with_commit_retry};
 
@@ -38,7 +39,7 @@ pub fn reindex_all(
         }
         after_id = page.last().expect("page checked non-empty above").id;
 
-        let indexed_ids = index_batch_with_fallback(index, maildir_base, &page);
+        let indexed_ids = index_batch_with_fallback(conn, index, maildir_base, &page)?;
         messages::mark_indexed(conn, &indexed_ids)?;
         count += indexed_ids.len();
     }
@@ -58,11 +59,18 @@ pub fn reindex_all(
 /// 検索できないメッセージが数万件規模で溜まり続けるという実害が出た。
 /// 1件ずつのフォールバックなら、その中の大半（クラッシュの原因ではない
 /// メッセージ）は普通に投入できる。
+///
+/// ついでに`attachment_count`/`preview`もMaildirから読み直した内容で更新する
+/// （検索インデックスへの投入とは無関係にせよ、どのみち`raw`/`body`を読んでいる
+/// ので追加コストがほぼ無い）。`preview`の切り詰め長を伸ばした際に、sync時点で
+/// 既に短いpreviewが保存されていた既存メッセージへ、この関数を通じて
+/// （`reindex_all`経由で）遡って反映するため（`db::messages::update_preview`参照）。
 fn index_batch_with_fallback(
+    conn: &Connection,
     index: &SearchIndex,
     maildir_base: &Path,
     page: &[messages::Message],
-) -> Vec<i64> {
+) -> Result<Vec<i64>, ReindexError> {
     let whole_batch = with_commit_retry(|| -> crate::search::Result<Vec<i64>> {
         let mut indexed_ids = Vec::new();
         for message in page {
@@ -82,6 +90,7 @@ fn index_batch_with_fallback(
                 subject: message.subject.as_deref().unwrap_or(""),
                 from: &from,
                 body: &body,
+                date_header: message.date_header,
             })?;
             indexed_ids.push(message.id);
         }
@@ -90,7 +99,8 @@ fn index_batch_with_fallback(
     });
 
     if let Ok(indexed_ids) = whole_batch {
-        return indexed_ids;
+        update_previews(conn, maildir_base, page)?;
+        return Ok(indexed_ids);
     }
 
     let mut indexed_ids = Vec::new();
@@ -111,6 +121,7 @@ fn index_batch_with_fallback(
                 subject: message.subject.as_deref().unwrap_or(""),
                 from: &from,
                 body: &body,
+                date_header: message.date_header,
             })?;
             index.commit()?;
             Ok(())
@@ -119,7 +130,26 @@ fn index_batch_with_fallback(
             indexed_ids.push(message.id);
         }
     }
-    indexed_ids
+    update_previews(conn, maildir_base, page)?;
+    Ok(indexed_ids)
+}
+
+/// `page`の各メッセージについて、Maildirに実体があるものだけ`attachment_count`/
+/// `preview`を再計算してDBへ書き戻す（`index_batch_with_fallback`参照）。
+fn update_previews(
+    conn: &Connection,
+    maildir_base: &Path,
+    page: &[messages::Message],
+) -> Result<(), ReindexError> {
+    for message in page {
+        let Ok(raw) = maildir::load(maildir_base, message.account_id, &message.uidl) else {
+            continue;
+        };
+        let attachment_count = attachments::list_attachments(&raw).len() as i64;
+        let preview = make_preview(extract_plain_text_body(&raw).as_deref());
+        messages::update_preview(conn, message.id, attachment_count, preview.as_deref())?;
+    }
+    Ok(())
 }
 
 /// syncのバッチcommitがTantivyの`IndexWriter`クラッシュ（`SearchIndex::commit`の
@@ -148,7 +178,7 @@ pub fn catch_up_unindexed(
     }
     let last_id = page.last().expect("page checked non-empty above").id;
 
-    let indexed_ids = index_batch_with_fallback(index, maildir_base, &page);
+    let indexed_ids = index_batch_with_fallback(conn, index, maildir_base, &page)?;
     messages::mark_indexed(conn, &indexed_ids)?;
     Ok((indexed_ids.len(), Some(last_id)))
 }
@@ -203,6 +233,60 @@ mod tests {
         assert_eq!(index.search("findable", 10).unwrap().len(), 1);
         assert_eq!(index.search("searchable", 10).unwrap().len(), 1);
         assert_eq!(index.search("alice", 10).unwrap().len(), 1);
+    }
+
+    /// previewの切り詰め長を伸ばした際、sync時点で既に短いpreviewが保存されていた
+    /// 既存メッセージが色分けルールから見えなくなっていた、という実際の不具合の回帰
+    /// テスト。`reindex_all`がMaildirから読み直して`attachment_count`/`preview`を
+    /// 最新の内容に更新することを確認する。
+    #[test]
+    fn reindex_all_refreshes_stale_preview_and_attachment_count() {
+        let conn = open_in_memory().unwrap();
+        let maildir_dir = tempfile::tempdir().unwrap();
+        let index = SearchIndex::create_in_ram().unwrap();
+
+        let account_id = accounts::insert(
+            &conn,
+            &NewAccount {
+                name: "test",
+                host: "pop.example.com",
+                port: 995,
+                username: "user",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+
+        let raw = b"Subject: Alert\r\n\r\nshort prefix then CRITICAL keyword much later in the body";
+        maildir::store(maildir_dir.path(), account_id, "u1", raw).unwrap();
+        let id = db_messages::insert_new(
+            &conn,
+            &NewMessage {
+                account_id,
+                uidl: "u1",
+                message_id_header: None,
+                subject: Some("Alert"),
+                from_name: None,
+                from_addr: None,
+                to_addr: None,
+                date_header: 1000,
+                size_bytes: raw.len() as i64,
+                attachment_count: 0,
+                // syncした時点の(古い/短い)previewを模す。"CRITICAL"は含まれていない。
+                preview: Some("short prefix then"),
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        reindex_all(&conn, maildir_dir.path(), &index).unwrap();
+
+        let refreshed = db_messages::get(&conn, id).unwrap().unwrap();
+        assert!(
+            refreshed.preview.as_deref().unwrap().contains("CRITICAL"),
+            "expected the refreshed preview to include the full body, got: {:?}",
+            refreshed.preview
+        );
     }
 
     #[test]

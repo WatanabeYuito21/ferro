@@ -165,6 +165,7 @@ fn index_page(search_index: &SearchIndex, page: &[ferro_core::db::messages::Mess
             subject: message.subject.as_deref().unwrap_or(""),
             from: &from,
             body: &body_for(i),
+            date_header: message.date_header,
         })?;
     }
     search_index.commit()?;
