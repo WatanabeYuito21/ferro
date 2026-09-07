@@ -1,5 +1,7 @@
 mod bench;
 
+use std::io::Write;
+
 use clap::{Parser, Subcommand};
 use ferro_core::account_config::{self, AccountConfig};
 use ferro_core::account_setup;
@@ -241,7 +243,12 @@ fn run_sync_command(
         allow_plaintext,
         limit,
         search_index,
+        |fetched, total| {
+            print!("\rfetched {fetched}/{total}...");
+            let _ = std::io::stdout().flush();
+        },
     )?;
+    println!();
 
     println!(
         "fetched {} message(s), {} remaining{}",
