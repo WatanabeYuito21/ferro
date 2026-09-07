@@ -204,6 +204,26 @@ fn hyphenated_hostname_query_matches_hyphenated_hostname_in_body() {
     assert_eq!(index.search("SRV-ADE-W01", 10).unwrap(), vec![1]);
 }
 
+/// 実際のNagios監視アラートに近いテキストに対する部分一致クエリ(「adeで検索しても
+/// ヒットしない」の再現・回帰テスト)。件名・本文どちらも"srv-ade-w01"を含んでおり、
+/// 短い部分文字列「ade」でもヒットすることを確認する。
+#[test]
+fn short_substring_query_matches_realistic_alert_subject_and_body() {
+    let index = SearchIndex::create_in_ram().unwrap();
+    index
+        .index_message(&sample(
+            1,
+            "[AZURE_srv-ade-w01] found files: 0  critical",
+            "monitor@example.com",
+            "***** Nagios ***** Notification Type PROBLEM Service Ade lightfile_stg did not \
+             created Host srv-ade-w01 Address 10.202.1",
+        ))
+        .unwrap();
+    index.commit().unwrap();
+
+    assert_eq!(index.search("ade", 10).unwrap(), vec![1]);
+}
+
 #[test]
 fn reindexing_same_id_replaces_previous_document() {
     let index = SearchIndex::create_in_ram().unwrap();

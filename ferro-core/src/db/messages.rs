@@ -203,6 +203,36 @@ pub fn mark_indexed(conn: &Connection, ids: &[i64]) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// 検索インデックスに投入済みとDBが認識しているメッセージの件数
+/// (`is_deleted=0`のみ)。起動時に`SearchIndex::num_docs`と突き合わせて
+/// 不整合（インデックスの中身が消えているのにこの件数だけ残っている）を
+/// 検知するために使う（`reset_all_fts_indexed`のドキュメント参照）。
+pub fn count_indexed(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE fts_indexed_at IS NOT NULL AND is_deleted = 0",
+        [],
+        |row| row.get(0),
+    )
+}
+
+/// 全メッセージの`fts_indexed_at`をNULLに戻す（`list_unindexed`の対象に戻し、
+/// バックグラウンドの自動キャッチアップに全件を拾い直させる）。
+///
+/// `fts_indexed_at`はSQLite側の列でTantivyの検索インデックスとは独立している
+/// ため、スキーマ変更での自己修復（`SearchIndex::open_or_create`）やユーザーに
+/// よる`search_index`ディレクトリの手動削除（CLAUDE.md記載の回避策）で
+/// インデックスの中身だけが空になっても、この列は「投入済み」を指したままに
+/// なってしまう。すると自動キャッチアップは「拾うものが無い」と判断し続け、
+/// 検索が（実データは全く入っていないのに）壊れたまま二度と直らない
+/// ―実際に踏んだ―。GUI起動時に空のインデックスを検知したらこれを呼び、
+/// 強制的に全件を再投入対象に戻す。
+pub fn reset_all_fts_indexed(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE messages SET fts_indexed_at = NULL, fts_doc_version = 0 WHERE fts_indexed_at IS NOT NULL",
+        [],
+    )
+}
+
 /// `attachment_count`/`preview`を再計算した値で上書きする。`reindex_all`が
 /// Maildirから読み直したメッセージについて呼ぶ（プレビューの切り詰め長を伸ばした
 /// ([`crate::mail::parse::make_preview`]) 際に、sync時点で既に古い(短い)previewが
@@ -760,6 +790,39 @@ mod tests {
 
         let after_all = list_unindexed(&conn, third, 10).unwrap();
         assert!(after_all.is_empty());
+    }
+
+    #[test]
+    fn count_indexed_only_counts_non_deleted_indexed_messages() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let indexed = insert_msg(&conn, account_id, "u0", 0);
+        let _unindexed = insert_msg(&conn, account_id, "u1", 1);
+        let deleted = insert_msg(&conn, account_id, "u2", 2);
+        mark_indexed(&conn, &[indexed, deleted]).unwrap();
+        set_deleted(&conn, deleted, true).unwrap();
+
+        assert_eq!(count_indexed(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn reset_all_fts_indexed_makes_every_message_unindexed_again() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let first = insert_msg(&conn, account_id, "u0", 0);
+        let second = insert_msg(&conn, account_id, "u1", 1);
+        mark_indexed(&conn, &[first, second]).unwrap();
+        assert!(list_unindexed(&conn, 0, 10).unwrap().is_empty());
+
+        let affected = reset_all_fts_indexed(&conn).unwrap();
+        assert_eq!(affected, 2);
+        assert_eq!(
+            list_unindexed(&conn, 0, 10).unwrap().iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![first, second]
+        );
+
+        // 既にNULLなものにまで触らないので、2回目は何も変わらない(0件)。
+        assert_eq!(reset_all_fts_indexed(&conn).unwrap(), 0);
     }
 
     #[test]
