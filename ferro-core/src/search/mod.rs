@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
-use tantivy::query::{QueryParser, QueryParserError};
+use tantivy::query::{BooleanQuery, Occur, PhrasePrefixQuery, Query};
 use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, STORED, Schema, TextFieldIndexing, TextOptions, Value,
 };
@@ -23,7 +23,7 @@ mod cjk_tokenizer;
 use cjk_tokenizer::CjkBigramTokenizer;
 
 /// このトークナイザ名でスキーマとインデックスの両方に登録する
-/// （`QueryParser`もクエリ文字列を索引投入時と同じトークナイザで分割するため、
+/// （`build_word_query`もクエリ文字列を索引投入時と同じトークナイザで分割するため、
 /// フィールドに設定した名前がインデックスの`TokenizerManager`に登録されている必要がある）。
 const TOKENIZER_NAME: &str = "ferro_cjk_bigram";
 
@@ -37,8 +37,6 @@ pub enum SearchError {
     Tantivy(#[from] tantivy::TantivyError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error(transparent)]
-    Query(#[from] QueryParserError),
     #[error("search index writer lock was poisoned")]
     LockPoisoned,
     #[error("search index writer is unavailable (a previous recovery attempt failed)")]
@@ -145,7 +143,6 @@ pub struct SearchIndex {
     // IndexWriterを同時に1つしか持てないため、drop前に新しいものは作れない）。
     writer: Mutex<Option<IndexWriter>>,
     fields: Fields,
-    query_parser: QueryParser,
 }
 
 impl SearchIndex {
@@ -196,25 +193,15 @@ impl SearchIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        let mut query_parser =
-            QueryParser::for_index(&index, vec![fields.subject, fields.from, fields.body]);
-        // デフォルトはOR結合だが、CJKバイグラムトークナイザは1クエリを複数の
-        // 2文字片に分割するため、OR結合だと「入力した語句のうちどれか1片でも
-        // 一致すればヒット」になってしまい、ノイズの多い検索結果になる
-        // （実際に「検索精度が低い」という形で踏んだ）。AND結合にして、
-        // クエリを構成する全ての片が含まれる文書だけを返すようにする。
-        query_parser.set_conjunction_by_default();
-        // 検索結果は関連度スコアではなく常に受信日時の新しい順（`search`参照）で
-        // 返すため、スコアにしか効かない`set_field_boost`は使わない
-        // （以前は件名/差出人を優先する目的で設定していたが、並び順を日付に
-        // 変えたことで意味が無くなった）。
+        // クエリの構築は`QueryParser`を使わず`search`内で自前で組み立てる
+        // （`build_word_query`のドキュメント参照。末尾の片方が部分一致
+        // (`PhrasePrefixQuery`)になるようにするため）。
 
         Ok(SearchIndex {
             index,
             reader,
             writer: Mutex::new(Some(writer)),
             fields,
-            query_parser,
         })
     }
 
@@ -317,11 +304,38 @@ impl SearchIndex {
     /// 超える場合でも、関連度が高いが古いものに押し出されて新しいものが
     /// 一覧から漏れる、ということが起きない（マッチした全文書のうち常に
     /// 一番新しいlimit件を返す）。
+    ///
+    /// クエリは空白区切りの「単語」ごとに`build_word_query`でフレーズ・
+    /// プレフィックスクエリを組み立て、単語間はAND（`QueryParser`時代と同じ、
+    /// 「検索精度が低い」対策）、1単語に対する件名/差出人/本文はOR（いずれかの
+    /// フィールドで一致すればよい）で結合する。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<i64>> {
         let searcher = self.reader.searcher();
-        let query = self.query_parser.parse_query(query)?;
+
+        let mut word_queries: Vec<Box<dyn Query>> = Vec::new();
+        for word in query.split_whitespace() {
+            let field_queries: Vec<(Occur, Box<dyn Query>)> = [self.fields.subject, self.fields.from, self.fields.body]
+                .into_iter()
+                .filter_map(|field| self.build_word_query(field, word))
+                .map(|q| (Occur::Should, q))
+                .collect();
+            if !field_queries.is_empty() {
+                word_queries.push(Box::new(BooleanQuery::new(field_queries)));
+            }
+        }
+        if word_queries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let combined: Box<dyn Query> = if word_queries.len() == 1 {
+            word_queries.into_iter().next().expect("checked len == 1 above")
+        } else {
+            Box::new(BooleanQuery::new(
+                word_queries.into_iter().map(|q| (Occur::Must, q)).collect(),
+            ))
+        };
+
         let top_docs = searcher.search(
-            &query,
+            combined.as_ref(),
             &TopDocs::with_limit(limit).order_by_u64_field(DATE_HEADER_FIELD_NAME, Order::Desc),
         )?;
 
@@ -338,6 +352,38 @@ impl SearchIndex {
                 Ok(id as i64)
             })
             .collect()
+    }
+
+    /// クエリ文字列の1単語(空白区切り)を、指定フィールド用のトークン列に変換し、
+    /// フレーズ・プレフィックスクエリを組み立てる。索引投入時と同じトークナイザ
+    /// (`register_tokenizer`)でトークン化するため、大文字小文字や区切りの扱いは
+    /// 一致する。単語が(記号のみ等で)1トークンにもならない場合は`None`。
+    ///
+    /// 最後のトークンだけは完全一致ではなく前方一致（`PhrasePrefixQuery`）にする。
+    /// これが要る理由: 「srv-jpp-w02」を「srv-jpp-w」で検索してもヒットしない、
+    /// という指摘への対応。バイグラムトークナイザは2文字未満の断片（クエリ末尾の
+    /// 1文字「w」等）をそのまま1トークンとして扱うが、文書側の対応する語
+    /// ("w02")はバイグラム("w0","02")になっているため、単純な完全一致の
+    /// フレーズクエリだとクエリの最後の断片が長い単語の途中で終わっている場合に
+    /// 一致しない。`PhrasePrefixQuery`は最後の項だけを前方一致で展開する
+    /// （1トークンしか無い場合は単純な前方一致クエリにフォールバックする。
+    /// tantivyの実装参照）ため、これで解決する。
+    fn build_word_query(&self, field: Field, word: &str) -> Option<Box<dyn Query>> {
+        let mut analyzer = self
+            .index
+            .tokenizers()
+            .get(TOKENIZER_NAME)
+            .expect("tokenizer is registered in from_index/register_tokenizer");
+        let mut token_stream = analyzer.token_stream(word);
+        let mut terms = Vec::new();
+        while token_stream.advance() {
+            terms.push(Term::from_field_text(field, &token_stream.token().text));
+        }
+        if terms.is_empty() {
+            None
+        } else {
+            Some(Box::new(PhrasePrefixQuery::new(terms)))
+        }
     }
 
     /// 現在インデックスに入っている文書数。GUI起動時に、DBの`fts_indexed_at`は

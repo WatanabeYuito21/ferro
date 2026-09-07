@@ -224,6 +224,23 @@ fn short_substring_query_matches_realistic_alert_subject_and_body() {
     assert_eq!(index.search("ade", 10).unwrap(), vec![1]);
 }
 
+/// 「srv-jpp-w02」を「srv-jpp-w」で検索してもヒットしない、という指摘の
+/// 回帰テスト。クエリの最後の断片("w")が1文字だけになると、バイグラム
+/// トークナイザはそれを単独のトークンとして扱う(2文字未満はバイグラムに
+/// できないため)が、文書側の対応する語("w02")はバイグラム("w0","02")に
+/// なっているため、単純な完全一致のフレーズクエリだと一致しなかった
+/// （`build_word_query`のドキュメント参照。`PhrasePrefixQuery`で解決した）。
+#[test]
+fn query_truncated_mid_word_still_matches_via_prefix_on_the_last_fragment() {
+    let index = SearchIndex::create_in_ram().unwrap();
+    index
+        .index_message(&sample(1, "Alert", "monitor@example.com", "Host srv-jpp-w02 is down"))
+        .unwrap();
+    index.commit().unwrap();
+
+    assert_eq!(index.search("srv-jpp-w", 10).unwrap(), vec![1]);
+}
+
 #[test]
 fn reindexing_same_id_replaces_previous_document() {
     let index = SearchIndex::create_in_ram().unwrap();
