@@ -4,6 +4,13 @@
   import { onDestroy, onMount } from 'svelte'
   import MessageList from './lib/MessageList.svelte'
   import MessageDetail from './lib/MessageDetail.svelte'
+  import Sidebar from './lib/Sidebar.svelte'
+  import SettingsView from './lib/SettingsView.svelte'
+
+  // Add account/Account listはメニューバー(View > Manage Accounts…)から開く
+  // 別画面として切り出している（`navigate`イベントで切り替える。下のonMount参照）。
+  // 'settings'はサイドバー下部の「設定」リンクから開く。
+  let currentView = 'messages'
 
   let accounts = []
   let error = ''
@@ -12,18 +19,22 @@
   // 作り直させることで、syncで増えたメッセージを最初のページから読み直させる。
   let messageListRefreshToken = 0
 
-  let form = { name: '', host: '', port: 995, username: '', useTls: true, password: '' }
-  let formError = ''
-  let submitting = false
+  // サイドバーで選ぶフォルダ/ラベル。フォルダとラベルはどちらか一方だけを選ぶ
+  // （ラベルを選んだらselectedLabelIdが優先され、MessageListはfolderを無視する）。
+  let selectedFolder = 'inbox'
+  let selectedLabelId = null
+  let folderCounts = { inbox: 0, starred: 0, snoozed: 0, archive: 0, trash: 0 }
+  let labels = []
+
+  // MessageDetailの「既読にするまでの時間」設定に使う。設定画面から戻るたびに
+  // 読み直す（SettingsView側で変更されている可能性があるため）。
+  let settings = { show_preview_line: true, show_sender_avatar: false, mark_read_delay: true }
 
   let searchQuery = ''
   // null = 検索していない（通常のMessageList表示）。配列なら検索結果表示に切り替える。
   let searchResults = null
   let searchError = ''
   let searching = false
-
-  let reindexStatus = ''
-  let reindexing = false
 
   let selectedMessageId = null
 
@@ -35,12 +46,76 @@
     accounts = await invoke('list_accounts')
   }
 
+  async function refreshFolderCounts() {
+    try {
+      folderCounts = await invoke('get_folder_counts', { accountId: null })
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  async function refreshLabels() {
+    try {
+      labels = await invoke('list_labels')
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  async function refreshSettings() {
+    try {
+      settings = await invoke('get_settings')
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  // メッセージの状態が変わった（アーカイブ/スヌーズ/ラベル付与/削除）ときの共通処理。
+  // 一覧を作り直し、フォルダ件数も再取得する（件数が変わりうるため）。
+  function handleMessageChanged() {
+    messageListRefreshToken += 1
+    refreshFolderCounts()
+  }
+
+  function selectFolder(key) {
+    currentView = 'messages'
+    selectedFolder = key
+    selectedLabelId = null
+    selectedMessageId = null
+  }
+
+  function selectLabel(labelId) {
+    currentView = 'messages'
+    selectedLabelId = labelId
+    selectedMessageId = null
+  }
+
+  async function createLabel({ name, color }) {
+    await invoke('create_label', { name, color })
+    await refreshLabels()
+  }
+
+  async function deleteLabel(labelId) {
+    try {
+      await invoke('delete_label', { labelId })
+      if (selectedLabelId === labelId) {
+        selectFolder('inbox')
+      }
+      await refreshLabels()
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
   let unlistenBackgroundSync
+  let unlistenSyncProgress
+  let unlistenNavigate
 
   onMount(async () => {
     try {
       await refreshAccounts()
       accountsConfigPath = await invoke('accounts_config_path')
+      await Promise.all([refreshFolderCounts(), refreshLabels(), refreshSettings()])
     } catch (e) {
       error = String(e)
     }
@@ -60,33 +135,35 @@
       }
       if (fetched > 0) {
         messageListRefreshToken += 1
+        refreshFolderCounts()
       }
+    })
+
+    // sync_account_with_limitが1バッチ完了するごとに発火する進捗イベント
+    // （手動Sync・背景同期どちらも共通）。"30/1000"のような表示に使う。
+    unlistenSyncProgress = await listen('sync-progress', (event) => {
+      const { account_id, fetched, total } = event.payload
+      syncStatus = { ...syncStatus, [account_id]: `syncing… ${fetched}/${total}` }
+    })
+
+    // メニューバー(View > Messages / Manage Accounts…)のクリックで発火する
+    // 画面切り替えイベント（src-tauri側の`on_menu_event`参照）。
+    unlistenNavigate = await listen('navigate', (event) => {
+      currentView = event.payload
     })
   })
 
   onDestroy(() => {
     unlistenBackgroundSync?.()
+    unlistenSyncProgress?.()
+    unlistenNavigate?.()
   })
 
-  async function addAccount() {
-    formError = ''
-    submitting = true
-    try {
-      await invoke('add_account', {
-        name: form.name,
-        host: form.host,
-        port: Number(form.port),
-        username: form.username,
-        useTls: form.useTls,
-        password: form.password,
-      })
-      form = { name: '', host: '', port: 995, username: '', useTls: true, password: '' }
-      await refreshAccounts()
-    } catch (e) {
-      formError = String(e)
-    } finally {
-      submitting = false
-    }
+  // AccountsView側のフォームからそのまま渡された値を受け取り、
+  // 失敗時はエラーを投げ返してAccountsView側でフォームエラーとして表示させる。
+  async function addAccount({ name, host, port, username, useTls, password }) {
+    await invoke('add_account', { name, host, port, username, useTls, password })
+    await refreshAccounts()
   }
 
   async function reloadAccountsConfig() {
@@ -116,10 +193,15 @@
   async function syncAccount(accountId) {
     syncStatus = { ...syncStatus, [accountId]: 'syncing…' }
     try {
+      // アカウント作成時にuse_tls=falseを明示選択済みのアカウントは、
+      // 手動Syncボタンのクリック自体がその都度の平文接続opt-inとみなす
+      // （CLIの`--allow-plaintext`に相当。自動同期(background sync)は
+      // 常にfalseで呼ぶことで対象外のままにする）。
+      const account = accounts.find((a) => a.id === accountId)
       const summary = await invoke('sync_account', {
         accountId,
         limit: null,
-        allowPlaintext: false,
+        allowPlaintext: account ? !account.use_tls : false,
       })
       const extra = summary.ended_early ? ' (stopped early after repeated disconnects)' : ''
       syncStatus = {
@@ -127,6 +209,7 @@
         [accountId]: `fetched ${summary.fetched}, ${summary.remaining} remaining${extra}`,
       }
       messageListRefreshToken += 1
+      refreshFolderCounts()
     } catch (e) {
       syncStatus = { ...syncStatus, [accountId]: `error: ${e}` }
     }
@@ -151,135 +234,138 @@
     searchResults = null
     searchError = ''
   }
-
-  async function runReindex() {
-    reindexing = true
-    reindexStatus = 'rebuilding…'
-    try {
-      const count = await invoke('reindex_all')
-      reindexStatus = `reindexed ${count} message(s)`
-    } catch (e) {
-      reindexStatus = `error: ${e}`
-    } finally {
-      reindexing = false
-    }
-  }
 </script>
 
 <main>
-  <h1>Ferro</h1>
-
   {#if error}
-    <p class="error">{error}</p>
+    <p class="error top-error">{error}</p>
   {/if}
 
-  <section>
-    <h2>Add account</h2>
-    <form on:submit|preventDefault={addAccount}>
-      <input placeholder="Name" bind:value={form.name} required />
-      <input placeholder="Host" bind:value={form.host} required />
-      <input type="number" placeholder="Port" bind:value={form.port} required min="1" max="65535" />
-      <input placeholder="Username" bind:value={form.username} required />
-      <label>
-        <input type="checkbox" bind:checked={form.useTls} />
-        Use TLS
-      </label>
-      <input type="password" placeholder="Password" bind:value={form.password} required />
-      <button type="submit" disabled={submitting}>Add account</button>
-    </form>
-    {#if formError}
-      <p class="error">{formError}</p>
-    {/if}
-  </section>
+  <div class="app-layout">
+    <Sidebar
+      {folderCounts}
+      {labels}
+      {selectedFolder}
+      {selectedLabelId}
+      onSelectFolder={selectFolder}
+      onSelectLabel={selectLabel}
+      onCreateLabel={createLabel}
+      onDeleteLabel={deleteLabel}
+      onOpenSettings={() => (currentView = 'settings')}
+    />
 
-  <section>
-    <h2>Accounts ({accounts.length})</h2>
-    {#if accountsConfigPath}
-      <p class="hint">
-        Settings (excluding passwords) live in <code>{accountsConfigPath}</code> —
-        edit it directly and reload, or use the form below.
-        <button type="button" on:click={reloadAccountsConfig} disabled={reloadingConfig}>
-          Reload config
-        </button>
-        {#if reloadConfigStatus}
-          <span class="status">{reloadConfigStatus}</span>
-        {/if}
-      </p>
-    {/if}
-    {#if accounts.length === 0}
-      <p>No accounts yet.</p>
-    {:else}
-      <ul>
-        {#each accounts as account (account.id)}
-          <li>
-            #{account.id} {account.name} — {account.username}@{account.host}:{account.port}
-            <button on:click={() => syncAccount(account.id)}>Sync</button>
-            <button on:click={() => removeAccount(account.id)}>Remove</button>
-            {#if syncStatus[account.id]}
-              <span class="status">{syncStatus[account.id]}</span>
+    <div class="main-content">
+      {#if currentView === 'settings'}
+        <SettingsView
+          {accounts}
+          {accountsConfigPath}
+          {syncStatus}
+          {reloadingConfig}
+          {reloadConfigStatus}
+          onAddAccount={addAccount}
+          onRemoveAccount={removeAccount}
+          onSyncAccount={syncAccount}
+          onReloadAccountsConfig={reloadAccountsConfig}
+          onBack={() => {
+            currentView = 'messages'
+            refreshSettings()
+          }}
+        />
+      {:else}
+        <section>
+            <form class="search-bar" on:submit|preventDefault={runSearch}>
+              <input placeholder="件名/差出人/本文を検索…" bind:value={searchQuery} />
+              <button type="submit" disabled={searching || !searchQuery.trim()}>検索</button>
+              {#if searchResults !== null}
+                <button type="button" on:click={clearSearch}>クリア</button>
+              {/if}
+            </form>
+            {#if searchError}
+              <p class="error">{searchError}</p>
             {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </section>
 
-  <section>
-    <h2>Messages</h2>
+            <div class="messages-layout">
+              <div class="list-pane">
+                {#if searchResults !== null}
+                  <ul class="search-results">
+                    {#if searchResults.length === 0 && !searching}
+                      <li class="empty">該当するメッセージがありません。</li>
+                    {/if}
+                    {#each searchResults as message (message.id)}
+                      <li>
+                        <button
+                          type="button"
+                          class="result-row"
+                          on:click={() => (selectedMessageId = message.id)}
+                        >
+                          <span class="from">{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
+                          <span class="subject">{message.subject ?? '(no subject)'}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  {#key messageListRefreshToken}
+                    <MessageList
+                      folder={selectedFolder}
+                      labelId={selectedLabelId}
+                      onSelect={(id) => (selectedMessageId = id)}
+                    />
+                  {/key}
+                {/if}
+              </div>
 
-    <form class="search-bar" on:submit|preventDefault={runSearch}>
-      <input placeholder="Search subject/from/body…" bind:value={searchQuery} />
-      <button type="submit" disabled={searching || !searchQuery.trim()}>Search</button>
-      {#if searchResults !== null}
-        <button type="button" on:click={clearSearch}>Clear</button>
+              {#if selectedMessageId !== null}
+                <div class="detail-pane">
+                  <MessageDetail
+                    messageId={selectedMessageId}
+                    allLabels={labels}
+                    markReadDelay={settings.mark_read_delay}
+                    onClose={() => (selectedMessageId = null)}
+                    onChanged={handleMessageChanged}
+                  />
+                </div>
+              {/if}
+            </div>
+          </section>
       {/if}
-      <button type="button" on:click={runReindex} disabled={reindexing}>
-        Rebuild search index
-      </button>
-      {#if reindexStatus}
-        <span class="status">{reindexStatus}</span>
-      {/if}
-    </form>
-    {#if searchError}
-      <p class="error">{searchError}</p>
-    {/if}
-
-    {#if searchResults !== null}
-      <ul class="search-results">
-        {#if searchResults.length === 0 && !searching}
-          <li class="empty">No matches.</li>
-        {/if}
-        {#each searchResults as message (message.id)}
-          <li>
-            <button type="button" class="result-row" on:click={() => (selectedMessageId = message.id)}>
-              <span class="from">{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
-              <span class="subject">{message.subject ?? '(no subject)'}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    {:else}
-      {#key messageListRefreshToken}
-        <MessageList accountId={null} onSelect={(id) => (selectedMessageId = id)} />
-      {/key}
-    {/if}
-
-    {#if selectedMessageId !== null}
-      <MessageDetail
-        messageId={selectedMessageId}
-        onClose={() => (selectedMessageId = null)}
-        onChanged={() => (messageListRefreshToken += 1)}
-      />
-    {/if}
-  </section>
+    </div>
+  </div>
 </main>
 
 <style>
   main {
-    max-width: 720px;
-    margin: 2rem auto;
-    padding: 0 1rem;
-    font-family: system-ui, sans-serif;
+    margin: 1rem;
+  }
+  .app-layout {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow:
+      0 1px 0 rgba(28, 27, 24, 0.06),
+      0 18px 40px -24px rgba(28, 27, 24, 0.35);
+  }
+  .main-content {
+    flex: 1;
+    min-width: 0;
+    padding: 20px 24px;
+  }
+  .messages-layout {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+  .list-pane {
+    flex: 1.2 1 420px;
+    min-width: 0;
+  }
+  .detail-pane {
+    flex: 1 1 420px;
+    min-width: 0;
   }
   form {
     display: flex;
@@ -288,25 +374,10 @@
     align-items: center;
   }
   .error {
-    color: #b00020;
+    color: var(--danger);
   }
-  .hint {
-    color: #555;
-    font-size: 0.9em;
-    background: #f7f7f7;
-    border: 1px solid #eee;
-    border-radius: 4px;
-    padding: 0.5rem 0.75rem;
-  }
-  .hint code {
-    background: #eee;
-    padding: 0.1rem 0.3rem;
-    border-radius: 3px;
-  }
-  .status {
-    margin-left: 0.5rem;
-    color: #555;
-    font-size: 0.9em;
+  .top-error {
+    margin-bottom: 1rem;
   }
   .search-bar {
     margin-bottom: 0.75rem;
@@ -314,45 +385,66 @@
   .search-bar input {
     flex: 1 1 auto;
     min-width: 200px;
+    padding: 8px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+    font-size: 13px;
+  }
+  .search-bar button {
+    border: 1px solid var(--border);
+    background: var(--surface-subtle);
+    border-radius: 7px;
+    padding: 7px 14px;
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .search-bar button:hover {
+    background: var(--surface-muted);
   }
   .search-results {
     list-style: none;
     margin: 0;
     padding: 0;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    max-height: 420px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-height: 560px;
     overflow-y: auto;
+    background: var(--surface-subtle);
   }
   .search-results li {
-    border-bottom: 1px solid #eee;
+    border-bottom: 1px solid var(--border);
   }
   .search-results li.empty {
-    padding: 0.4rem 0.5rem;
-    color: #666;
+    padding: 0.6rem 0.75rem;
+    color: var(--text-muted);
   }
   .result-row {
     display: flex;
     width: 100%;
     gap: 0.75rem;
-    padding: 0.4rem 0.5rem;
+    padding: 0.5rem 0.75rem;
     border: none;
     background: none;
     font: inherit;
     text-align: left;
     cursor: pointer;
+    box-sizing: border-box;
   }
   .result-row:hover {
-    background: #f5f5f5;
+    background: #f4f2eb;
   }
   .search-results .from {
-    flex: 0 0 200px;
+    flex: 0 0 160px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .search-results .subject {
     flex: 1 1 auto;
+    min-width: 0;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
