@@ -3,8 +3,10 @@ use std::path::Path;
 pub use rusqlite::Connection;
 
 pub mod accounts;
+pub mod labels;
 mod migrate;
 pub mod messages;
+pub mod settings;
 
 /// DBファイルを開き、未適用のマイグレーションを適用してから返す。
 /// CLIとGUI(Tauri)はどちらもこの関数を通して同じパスのDBを開く。

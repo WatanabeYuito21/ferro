@@ -8,3 +8,6 @@ frontend/dist
 src-tauri/target
 src-tauri/gen
 
+# design reference mockups (not app code, kept locally only)
+/mocup
+
