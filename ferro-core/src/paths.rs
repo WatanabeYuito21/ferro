@@ -28,3 +28,11 @@ pub fn search_index_dir() -> PathBuf {
 pub fn accounts_config_path() -> PathBuf {
     app_data_dir().join("accounts.toml")
 }
+
+/// 特定の文字列を含むメッセージの一覧表示を色分けするルールを保持するTOMLファイル。
+/// `accounts.toml`と同じく、これが正の情報源（`color_rules::load`/`save`参照）。
+/// パスワードのようなDB連携が要らない純粋な表示設定なので、`accounts.toml`と違い
+/// DBテーブルへのreconcileは無い（GUIはこのファイルを直接読み書きする）。
+pub fn color_rules_config_path() -> PathBuf {
+    app_data_dir().join("color_rules.toml")
+}

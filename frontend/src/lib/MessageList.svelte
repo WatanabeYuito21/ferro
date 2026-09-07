@@ -4,10 +4,11 @@
   // 1000万件規模でもDOMには可視範囲分の行しか描画しない。
   import { invoke } from '@tauri-apps/api/core'
   import { untrack } from 'svelte'
+  import { matchColor } from './colorRules.js'
 
   // labelIdが指定されているときはfolderを無視してラベル一覧を表示する
   // （サイドバーはフォルダかラベルのどちらか一方を選ぶ設計）。
-  let { folder = 'inbox', labelId = null, onSelect = () => {} } = $props()
+  let { folder = 'inbox', labelId = null, colorRules = [], onSelect = () => {} } = $props()
 
   const ROW_HEIGHT = 68
   const OVERSCAN_ROWS = 5
@@ -101,6 +102,7 @@
   <div class="spacer" style="height: {totalHeight}px">
     <div class="window" style="transform: translateY({topOffset}px)">
       {#each visibleItems as message (message.id)}
+        {@const rowColor = matchColor(colorRules, message)}
         <div
           class="row"
           class:unread={!message.is_read}
@@ -112,12 +114,12 @@
         >
           <div class="line1">
             {#if message.is_flagged}<span class="star">★</span>{/if}
-            <span class="from" title={message.from_addr ?? ''}>
+            <span class="from" title={message.from_addr ?? ''} style={rowColor ? `color: ${rowColor}` : ''}>
               {message.from_name ?? message.from_addr ?? '(unknown sender)'}
             </span>
             <span class="date">{formatDate(message.date_header)}</span>
           </div>
-          <div class="subject" title={message.subject ?? ''}>
+          <div class="subject" title={message.subject ?? ''} style={rowColor ? `color: ${rowColor}` : ''}>
             {message.subject ?? '(no subject)'}
           </div>
           {#if message.preview}

@@ -6,6 +6,7 @@
   import MessageDetail from './lib/MessageDetail.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import SettingsView from './lib/SettingsView.svelte'
+  import { matchColor } from './lib/colorRules.js'
 
   // Add account/Account listはメニューバー(View > Manage Accounts…)から開く
   // 別画面として切り出している（`navigate`イベントで切り替える。下のonMount参照）。
@@ -45,6 +46,12 @@
   let accountsConfigPath = ''
   let reloadingConfig = false
   let reloadConfigStatus = ''
+
+  // 特定文字列を含むメッセージの一覧表示を色分けするルール(color_rules.toml)。
+  // MessageListと検索結果一覧(下の方)の両方で使うため、labels/folderCounts同様
+  // ここで状態を持つ。
+  let colorRules = []
+  let colorRulesConfigPath = ''
 
   async function refreshAccounts() {
     accounts = await invoke('list_accounts')
@@ -111,6 +118,18 @@
     }
   }
 
+  async function refreshColorRules() {
+    colorRules = await invoke('get_color_rules')
+  }
+
+  async function addColorRule({ pattern, color }) {
+    colorRules = await invoke('add_color_rule', { pattern, color })
+  }
+
+  async function removeColorRule(index) {
+    colorRules = await invoke('remove_color_rule', { index })
+  }
+
   let unlistenBackgroundSync
   let unlistenSyncProgress
   let unlistenNavigate
@@ -119,7 +138,8 @@
     try {
       await refreshAccounts()
       accountsConfigPath = await invoke('accounts_config_path')
-      await Promise.all([refreshFolderCounts(), refreshLabels(), refreshSettings()])
+      colorRulesConfigPath = await invoke('color_rules_config_path')
+      await Promise.all([refreshFolderCounts(), refreshLabels(), refreshSettings(), refreshColorRules()])
     } catch (e) {
       error = String(e)
     }
@@ -291,6 +311,11 @@
           onRemoveAccount={removeAccount}
           onSyncAccount={syncAccount}
           onReloadAccountsConfig={reloadAccountsConfig}
+          {colorRules}
+          {colorRulesConfigPath}
+          onAddColorRule={addColorRule}
+          onRemoveColorRule={removeColorRule}
+          onReloadColorRules={refreshColorRules}
           onBack={() => {
             currentView = 'messages'
             refreshSettings()
@@ -323,14 +348,15 @@
                       <li class="empty">該当するメッセージがありません。</li>
                     {/if}
                     {#each searchResults as message (message.id)}
+                      {@const rowColor = matchColor(colorRules, message)}
                       <li>
                         <button
                           type="button"
                           class="result-row"
                           on:click={() => (selectedMessageId = message.id)}
                         >
-                          <span class="from">{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
-                          <span class="subject">{message.subject ?? '(no subject)'}</span>
+                          <span class="from" style={rowColor ? `color: ${rowColor}` : ''}>{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
+                          <span class="subject" style={rowColor ? `color: ${rowColor}` : ''}>{message.subject ?? '(no subject)'}</span>
                         </button>
                       </li>
                     {/each}
@@ -340,6 +366,7 @@
                     <MessageList
                       folder={selectedFolder}
                       labelId={selectedLabelId}
+                      {colorRules}
                       onSelect={(id) => (selectedMessageId = id)}
                     />
                   {/key}

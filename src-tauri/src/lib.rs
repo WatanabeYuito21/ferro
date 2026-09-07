@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ferro_core::account_config::{self, AccountConfig};
 use ferro_core::account_setup;
+use ferro_core::color_rules::{self, ColorRule};
 use ferro_core::credentials;
 use ferro_core::db::accounts::Account;
 use ferro_core::db::labels::Label;
@@ -536,6 +537,37 @@ fn accounts_config_path() -> String {
     paths::accounts_config_path().display().to_string()
 }
 
+/// 色分けルール(`color_rules.toml`)を読み込む。実際のマッチ判定はフロント側
+/// （`colorRules.js`）が行うので、ここは読み込んだ内容をそのまま返すだけ。
+/// GUI起動時の初回読み込みと、手編集後の「再読み込み」ボタンの両方で使う。
+#[tauri::command]
+fn get_color_rules() -> Result<Vec<ColorRule>, String> {
+    color_rules::load(&paths::color_rules_config_path())
+        .map(|file| file.rules)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_color_rule(pattern: String, color: String) -> Result<Vec<ColorRule>, String> {
+    color_rules::add(&paths::color_rules_config_path(), ColorRule { pattern, color })
+        .map(|file| file.rules)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_color_rule(index: usize) -> Result<Vec<ColorRule>, String> {
+    color_rules::remove(&paths::color_rules_config_path(), index)
+        .map(|file| file.rules)
+        .map_err(|e| e.to_string())
+}
+
+/// フロント側で「設定ファイルはここにあります」と案内表示するためのパス
+/// （`accounts_config_path`と同じ理由）。
+#[tauri::command]
+fn color_rules_config_path() -> String {
+    paths::color_rules_config_path().display().to_string()
+}
+
 /// アカウントを同期する。ネットワークI/Oを伴い数十秒〜数分（クラッシュ時の
 /// リトライを含めるとさらに長く）かかることがある。`#[tauri::command]`の
 /// 呼び出し元スレッドで直接この重い処理を行うと、実機でWindowsから
@@ -890,7 +922,11 @@ pub fn run() {
             get_settings,
             update_settings,
             reload_accounts_config,
-            accounts_config_path
+            accounts_config_path,
+            get_color_rules,
+            add_color_rule,
+            remove_color_rule,
+            color_rules_config_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Ferro desktop app");

@@ -26,7 +26,10 @@
   （開発用のスループット/レイテンシ計測、`$TMPDIR/ferro-bench`に専用データを生成し本番データには
   触れない）、`read`/`flag`/`delete`（既読・フラグ・論理削除）
 - `src-tauri` + `frontend`（Svelte）: アカウント管理、同期、メッセージ一覧（自前仮想スクロール）、
-  全文検索、メッセージ詳細表示（本文プレーンテキスト・添付一覧・保存ダイアログ）
+  全文検索、メッセージ詳細表示（本文プレーンテキスト・添付一覧・保存ダイアログ）、
+  フォルダ/ラベルによる整理、設定画面、色分けルール（`color_rules.toml`。件名/差出人/
+  本文プレビューに特定文字列を含むメッセージの一覧表示を色分けする。マッチ判定は
+  フロント側の`colorRules.js`が行う。`ferro_core::color_rules`参照）
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`
