@@ -225,6 +225,8 @@ mod tests {
                 to_addr: None,
                 date_header: 1000,
                 size_bytes: 0,
+                attachment_count: 0,
+                preview: None,
             },
         )
         .unwrap();

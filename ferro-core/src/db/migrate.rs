@@ -17,6 +17,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 2,
         sql: include_str!("../../migrations/0002_accounts_name_unique.sql"),
     },
+    Migration {
+        version: 3,
+        sql: include_str!("../../migrations/0003_folders_and_labels.sql"),
+    },
 ];
 
 /// 未適用のマイグレーションを`schema_migrations`テーブルの記録に基づいて適用する。

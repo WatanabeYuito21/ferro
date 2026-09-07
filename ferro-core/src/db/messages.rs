@@ -2,6 +2,12 @@ use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 
 use super::now_unix;
 
+/// `row_to_message`と各SELECT文の両方で使う共通の列挙。新しい列を足すときは
+/// ここと`row_to_message`の両方を同時に更新すること（列の並び順が一致している必要がある）。
+const MESSAGE_COLUMNS: &str = "id, account_id, uidl, subject, from_name, from_addr, to_addr, \
+    date_header, size_bytes, is_read, is_flagged, is_deleted, is_archived, snoozed_until, \
+    attachment_count, preview";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
     pub id: i64,
@@ -16,6 +22,10 @@ pub struct Message {
     pub is_read: bool,
     pub is_flagged: bool,
     pub is_deleted: bool,
+    pub is_archived: bool,
+    pub snoozed_until: Option<i64>,
+    pub attachment_count: i64,
+    pub preview: Option<String>,
 }
 
 pub struct NewMessage<'a> {
@@ -28,6 +38,8 @@ pub struct NewMessage<'a> {
     pub to_addr: Option<&'a str>,
     pub date_header: i64,
     pub size_bytes: i64,
+    pub attachment_count: i64,
+    pub preview: Option<&'a str>,
 }
 
 /// 新着メッセージを挿入する。同じ(account_id, uidl)が既にあれば何もせずNoneを返す。
@@ -36,8 +48,8 @@ pub fn insert_new(conn: &Connection, msg: &NewMessage) -> rusqlite::Result<Optio
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO messages
             (account_id, uidl, message_id_header, subject, from_name, from_addr, to_addr,
-             date_header, size_bytes, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             date_header, size_bytes, attachment_count, preview, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             msg.account_id,
             msg.uidl,
@@ -48,6 +60,8 @@ pub fn insert_new(conn: &Connection, msg: &NewMessage) -> rusqlite::Result<Optio
             msg.to_addr,
             msg.date_header,
             msg.size_bytes,
+            msg.attachment_count,
+            msg.preview,
             now_unix(),
         ],
     )?;
@@ -81,6 +95,23 @@ pub fn set_flagged(conn: &Connection, id: i64, is_flagged: bool) -> rusqlite::Re
     Ok(())
 }
 
+pub fn set_archived(conn: &Connection, id: i64, is_archived: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE messages SET is_archived = ?1 WHERE id = ?2",
+        params![is_archived, id],
+    )?;
+    Ok(())
+}
+
+/// `until`にNoneを渡すとスヌーズ解除（即座に受信箱へ戻す）。
+pub fn set_snoozed(conn: &Connection, id: i64, until: Option<i64>) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE messages SET snoozed_until = ?1 WHERE id = ?2",
+        params![until, id],
+    )?;
+    Ok(())
+}
+
 /// ソフトデリート。POP3サーバー側のDELEとは独立したローカルの削除フラグを立てる/戻す。
 /// `is_deleted=1`にすると`list_recent`/`list_all_for_reindex`から即座に外れる。
 /// 検索インデックス側からも取り除きたい場合は`message_actions::set_deleted`を使うこと
@@ -95,9 +126,7 @@ pub fn set_deleted(conn: &Connection, id: i64, is_deleted: bool) -> rusqlite::Re
 
 pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Message>> {
     conn.query_row(
-        "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
-                date_header, size_bytes, is_read, is_flagged, is_deleted
-         FROM messages WHERE id = ?1",
+        &format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"),
         [id],
         row_to_message,
     )
@@ -107,11 +136,9 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Message>> {
 /// アカウント削除時、Maildir/検索インデックスのクリーンアップに使うため
 /// そのアカウントの全メッセージ（`is_deleted`に関わらず）を一覧する。
 pub fn list_all_for_account(conn: &Connection, account_id: i64) -> rusqlite::Result<Vec<Message>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
-                date_header, size_bytes, is_read, is_flagged, is_deleted
-         FROM messages WHERE account_id = ?1",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages WHERE account_id = ?1"
+    ))?;
     stmt.query_map([account_id], row_to_message)?.collect()
 }
 
@@ -131,16 +158,41 @@ pub fn list_all_for_reindex(
     after_id: i64,
     limit: u32,
 ) -> rusqlite::Result<Vec<Message>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
-                date_header, size_bytes, is_read, is_flagged, is_deleted
-         FROM messages
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages
          WHERE is_deleted = 0 AND id > ?1
          ORDER BY id ASC
-         LIMIT ?2",
-    )?;
+         LIMIT ?2"
+    ))?;
     stmt.query_map(params![after_id, limit], row_to_message)?
         .collect()
+}
+
+/// 検索インデックス未投入(`fts_indexed_at IS NULL`)のメッセージを古い順に一定件数返す。
+/// syncのバッチ単位commitがTantivyのIndexWriterクラッシュでリトライを使い切って
+/// 失敗した場合、そのバッチのメッセージはDB/Maildirには保存済みだが検索インデックス
+/// には入らないまま残る。`reindex::catch_up_unindexed`がこれを定期的に拾い直すために使う。
+pub fn list_unindexed(conn: &Connection, limit: u32) -> rusqlite::Result<Vec<Message>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages
+         WHERE is_deleted = 0 AND fts_indexed_at IS NULL
+         ORDER BY id ASC
+         LIMIT ?1"
+    ))?;
+    stmt.query_map([limit], row_to_message)?.collect()
+}
+
+/// 検索インデックスへの投入が成功したメッセージにマークを付ける
+/// (`list_unindexed`が二度と拾わないようにするため。sync/reindex_all両方から呼ぶ)。
+pub fn mark_indexed(conn: &Connection, ids: &[i64]) -> rusqlite::Result<()> {
+    let indexed_at = now_unix();
+    for id in ids {
+        conn.execute(
+            "UPDATE messages SET fts_indexed_at = ?1, fts_doc_version = fts_doc_version + 1 WHERE id = ?2",
+            params![indexed_at, id],
+        )?;
+    }
+    Ok(())
 }
 
 /// キーセットページネーションで新着順（date_header降順）に一覧取得する。
@@ -170,12 +222,7 @@ fn build_list_recent_query(
     before: Option<i64>,
     limit: u32,
 ) -> (String, Vec<Box<dyn ToSql>>) {
-    let mut sql = String::from(
-        "SELECT id, account_id, uidl, subject, from_name, from_addr, to_addr,
-                date_header, size_bytes, is_read, is_flagged, is_deleted
-         FROM messages
-         WHERE is_deleted = 0",
-    );
+    let mut sql = format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE is_deleted = 0");
     let mut params: Vec<Box<dyn ToSql>> = Vec::new();
 
     if let Some(id) = account_id {
@@ -192,6 +239,174 @@ fn build_list_recent_query(
     (sql, params)
 }
 
+/// フォルダ別一覧の対象。「送信済み/下書き」に相当するものは無い
+/// （Ferroは受信専用。CLAUDE.md参照）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Folder {
+    Inbox,
+    Starred,
+    Snoozed,
+    Archive,
+    Trash,
+}
+
+/// フォルダ別のキーセットページネーション一覧。`list_recent`(受信箱専用、
+/// CLI等の既存呼び出し元がある)とは別関数にして、既存の挙動・テストに触れない。
+/// `now`はスヌーズ判定用の現在時刻(呼び出し側から渡す。テスト容易性のため)。
+pub fn list_by_folder(
+    conn: &Connection,
+    folder: Folder,
+    account_id: Option<i64>,
+    before: Option<i64>,
+    limit: u32,
+    now: i64,
+) -> rusqlite::Result<Vec<Message>> {
+    let (sql, params) = build_folder_query(folder, account_id, before, limit, now);
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    stmt.query_map(param_refs.as_slice(), row_to_message)?.collect()
+}
+
+/// `sql`は末尾が"WHERE "で終わっている前提で、フォルダ条件をそこに追記する
+/// （`build_folder_query`/`build_folder_count_query`で共有する）。
+fn append_folder_condition(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn ToSql>>,
+    folder: Folder,
+    now: i64,
+) {
+    match folder {
+        Folder::Inbox => {
+            sql.push_str(
+                "is_deleted = 0 AND is_archived = 0 AND (snoozed_until IS NULL OR snoozed_until <= ?)",
+            );
+            params.push(Box::new(now));
+        }
+        Folder::Starred => {
+            sql.push_str("is_deleted = 0 AND is_flagged = 1");
+        }
+        Folder::Snoozed => {
+            sql.push_str("is_deleted = 0 AND snoozed_until IS NOT NULL AND snoozed_until > ?");
+            params.push(Box::new(now));
+        }
+        Folder::Archive => {
+            sql.push_str("is_deleted = 0 AND is_archived = 1");
+        }
+        Folder::Trash => {
+            sql.push_str("is_deleted = 1");
+        }
+    }
+}
+
+fn build_folder_query(
+    folder: Folder,
+    account_id: Option<i64>,
+    before: Option<i64>,
+    limit: u32,
+    now: i64,
+) -> (String, Vec<Box<dyn ToSql>>) {
+    let mut sql = format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE ");
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+    append_folder_condition(&mut sql, &mut params, folder, now);
+
+    if let Some(id) = account_id {
+        sql.push_str(" AND account_id = ?");
+        params.push(Box::new(id));
+    }
+    if let Some(cursor) = before {
+        sql.push_str(" AND date_header < ?");
+        params.push(Box::new(cursor));
+    }
+    sql.push_str(" ORDER BY date_header DESC LIMIT ?");
+    params.push(Box::new(limit));
+
+    (sql, params)
+}
+
+/// サイドバーのフォルダ件数表示用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FolderCounts {
+    pub inbox: i64,
+    pub starred: i64,
+    pub snoozed: i64,
+    pub archive: i64,
+    pub trash: i64,
+}
+
+pub fn folder_counts(
+    conn: &Connection,
+    account_id: Option<i64>,
+    now: i64,
+) -> rusqlite::Result<FolderCounts> {
+    let mut counts = FolderCounts::default();
+    for folder in [
+        Folder::Inbox,
+        Folder::Starred,
+        Folder::Snoozed,
+        Folder::Archive,
+        Folder::Trash,
+    ] {
+        let (sql, params) = build_folder_count_query(folder, account_id, now);
+        let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let count: i64 = conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?;
+        match folder {
+            Folder::Inbox => counts.inbox = count,
+            Folder::Starred => counts.starred = count,
+            Folder::Snoozed => counts.snoozed = count,
+            Folder::Archive => counts.archive = count,
+            Folder::Trash => counts.trash = count,
+        }
+    }
+    Ok(counts)
+}
+
+fn build_folder_count_query(
+    folder: Folder,
+    account_id: Option<i64>,
+    now: i64,
+) -> (String, Vec<Box<dyn ToSql>>) {
+    let mut sql = String::from("SELECT COUNT(*) FROM messages WHERE ");
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+    append_folder_condition(&mut sql, &mut params, folder, now);
+
+    if let Some(id) = account_id {
+        sql.push_str(" AND account_id = ?");
+        params.push(Box::new(id));
+    }
+
+    (sql, params)
+}
+
+/// 指定ラベルが付いたメッセージのキーセットページネーション一覧。
+/// ラベルは通常メッセージ全体からすれば少数のサブセットのはずなので、
+/// `messages`側の(account_id, date_header)インデックスは使えず一時ソートに
+/// なりうるが、対象件数が少ないため許容する。
+pub fn list_by_label(
+    conn: &Connection,
+    label_id: i64,
+    before: Option<i64>,
+    limit: u32,
+) -> rusqlite::Result<Vec<Message>> {
+    let mut sql = format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages
+         JOIN message_labels ON message_labels.message_id = messages.id
+         WHERE message_labels.label_id = ? AND messages.is_deleted = 0"
+    );
+    let mut params: Vec<Box<dyn ToSql>> = vec![Box::new(label_id)];
+
+    if let Some(cursor) = before {
+        sql.push_str(" AND messages.date_header < ?");
+        params.push(Box::new(cursor));
+    }
+    sql.push_str(" ORDER BY messages.date_header DESC LIMIT ?");
+    params.push(Box::new(limit));
+
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql)?;
+    stmt.query_map(param_refs.as_slice(), row_to_message)?.collect()
+}
+
 fn row_to_message(row: &Row) -> rusqlite::Result<Message> {
     Ok(Message {
         id: row.get(0)?,
@@ -206,6 +421,10 @@ fn row_to_message(row: &Row) -> rusqlite::Result<Message> {
         is_read: row.get(9)?,
         is_flagged: row.get(10)?,
         is_deleted: row.get(11)?,
+        is_archived: row.get(12)?,
+        snoozed_until: row.get(13)?,
+        attachment_count: row.get(14)?,
+        preview: row.get(15)?,
     })
 }
 
@@ -233,7 +452,7 @@ mod tests {
         .unwrap()
     }
 
-    fn insert_msg(conn: &Connection, account_id: i64, uidl: &str, date_header: i64) {
+    fn insert_msg(conn: &Connection, account_id: i64, uidl: &str, date_header: i64) -> i64 {
         insert_new(
             conn,
             &NewMessage {
@@ -246,9 +465,12 @@ mod tests {
                 to_addr: Some("b@example.com"),
                 date_header,
                 size_bytes: 100,
+                attachment_count: 0,
+                preview: None,
             },
         )
-        .unwrap();
+        .unwrap()
+        .unwrap()
     }
 
     #[test]
@@ -354,6 +576,8 @@ mod tests {
                 to_addr: Some("bob@example.com"),
                 date_header: 1000,
                 size_bytes: 42,
+                attachment_count: 0,
+                preview: None,
             },
         )
         .unwrap();
@@ -371,6 +595,8 @@ mod tests {
                 to_addr: None,
                 date_header: 2000,
                 size_bytes: 1,
+                attachment_count: 0,
+                preview: None,
             },
         )
         .unwrap();
@@ -395,6 +621,8 @@ mod tests {
                 to_addr: None,
                 date_header: 1,
                 size_bytes: 1,
+                attachment_count: 0,
+                preview: None,
             },
         );
         assert!(result.is_err(), "foreign key violation should be rejected");
@@ -483,5 +711,132 @@ mod tests {
                 "expected no temp b-tree sort, got plan: {plan:?}"
             );
         }
+    }
+
+    #[test]
+    fn list_by_folder_separates_starred_archived_snoozed_trash_and_inbox() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let inbox = insert_msg(&conn, account_id, "inbox", 100);
+        let starred = insert_msg(&conn, account_id, "starred", 200);
+        let archived = insert_msg(&conn, account_id, "archived", 300);
+        let snoozed_future = insert_msg(&conn, account_id, "snoozed-future", 400);
+        let snoozed_past = insert_msg(&conn, account_id, "snoozed-past", 500);
+        let trashed = insert_msg(&conn, account_id, "trashed", 600);
+
+        set_flagged(&conn, starred, true).unwrap();
+        set_archived(&conn, archived, true).unwrap();
+        set_snoozed(&conn, snoozed_future, Some(10_000)).unwrap();
+        set_snoozed(&conn, snoozed_past, Some(1)).unwrap();
+        set_deleted(&conn, trashed, true).unwrap();
+
+        let now = 5_000;
+        let ids = |msgs: Vec<Message>| msgs.into_iter().map(|m| m.id).collect::<Vec<_>>();
+
+        // 受信箱: アーカイブ/ゴミ箱/スヌーズ中を除く（スター付きは他の一覧同様、
+        // 単なるフラグなので受信箱からは除外されない。スヌーズ期限が過ぎたものは戻る）。
+        let inbox_ids = ids(list_by_folder(&conn, Folder::Inbox, None, None, 50, now).unwrap());
+        assert_eq!(inbox_ids, vec![snoozed_past, starred, inbox]);
+
+        assert_eq!(
+            ids(list_by_folder(&conn, Folder::Starred, None, None, 50, now).unwrap()),
+            vec![starred]
+        );
+        assert_eq!(
+            ids(list_by_folder(&conn, Folder::Archive, None, None, 50, now).unwrap()),
+            vec![archived]
+        );
+        assert_eq!(
+            ids(list_by_folder(&conn, Folder::Snoozed, None, None, 50, now).unwrap()),
+            vec![snoozed_future]
+        );
+        assert_eq!(
+            ids(list_by_folder(&conn, Folder::Trash, None, None, 50, now).unwrap()),
+            vec![trashed]
+        );
+    }
+
+    #[test]
+    fn list_by_folder_query_plans_use_an_index() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        for i in 0..20 {
+            insert_msg(&conn, account_id, &format!("f{i}"), i);
+        }
+
+        for folder in [
+            Folder::Inbox,
+            Folder::Starred,
+            Folder::Archive,
+            Folder::Snoozed,
+            Folder::Trash,
+        ] {
+            let (sql, params) = build_folder_query(folder, Some(account_id), None, 50, 1_000);
+            let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
+            let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+            let mut stmt = conn.prepare(&explain_sql).unwrap();
+            let plan: Vec<String> = stmt
+                .query_map(param_refs.as_slice(), |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+
+            assert!(
+                plan.iter().any(|line| line.contains("USING INDEX")),
+                "folder {folder:?}: expected the query to use an index, got plan: {plan:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_by_label_returns_only_tagged_non_deleted_messages_with_cursor() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let m1 = insert_msg(&conn, account_id, "l1", 100);
+        let m2 = insert_msg(&conn, account_id, "l2", 200);
+        let m3 = insert_msg(&conn, account_id, "l3", 300);
+        insert_msg(&conn, account_id, "untagged", 400);
+
+        let label_id = crate::db::labels::insert(&conn, "旅行", "#8D9FC4").unwrap();
+        crate::db::labels::set_on_message(&conn, m1, label_id, true).unwrap();
+        crate::db::labels::set_on_message(&conn, m2, label_id, true).unwrap();
+        crate::db::labels::set_on_message(&conn, m3, label_id, true).unwrap();
+        set_deleted(&conn, m1, true).unwrap();
+
+        let first_page = list_by_label(&conn, label_id, None, 1).unwrap();
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(first_page[0].id, m3);
+
+        let second_page = list_by_label(&conn, label_id, Some(first_page[0].date_header), 10).unwrap();
+        assert_eq!(
+            second_page.iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec![m2]
+        );
+    }
+
+    #[test]
+    fn folder_counts_matches_list_by_folder_lengths() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let inbox = insert_msg(&conn, account_id, "inbox", 100);
+        let starred = insert_msg(&conn, account_id, "starred", 200);
+        let archived = insert_msg(&conn, account_id, "archived", 300);
+        let snoozed = insert_msg(&conn, account_id, "snoozed", 400);
+        let trashed = insert_msg(&conn, account_id, "trashed", 500);
+
+        set_flagged(&conn, starred, true).unwrap();
+        set_archived(&conn, archived, true).unwrap();
+        set_snoozed(&conn, snoozed, Some(10_000)).unwrap();
+        set_deleted(&conn, trashed, true).unwrap();
+
+        let now = 1_000;
+        let counts = folder_counts(&conn, None, now).unwrap();
+        assert_eq!(counts.inbox, 2); // inbox本体 + starred(受信箱にも残る)
+        assert_eq!(counts.starred, 1);
+        assert_eq!(counts.archive, 1);
+        assert_eq!(counts.snoozed, 1);
+        assert_eq!(counts.trash, 1);
+        let _ = inbox;
     }
 }
