@@ -236,11 +236,37 @@
   （`SearchIndex::open_or_create`を最初からやり直す）か、`search_index`ディレクトリを
   削除して再構築する（完全にSQLite/Maildirから再構築可能な派生キャッシュなので安全）こと。
   なお`SearchIndex::create_in_ram`（テスト専用）はこの問題を踏まない。
+- **Linux対応（GUI/TUI共通）で判明した注意点**: 開発機がWindowsのため実機検証はできておらず、
+  以下は依存クレートのソース/ドキュメント調査に基づく静的な対応。
+  - `src-tauri/capabilities/default.json`の`opener:allow-open-path`が長らく`$APPDATA/ferro/**`
+    のみを許可していたが、これは実は一度も機能していなかった（Tauriの`$APPDATA`は
+    `dirs::data_dir()`に**バンドル識別子**（`tauri.conf.json`の`identifier`＝
+    `"com.ferro-mail.desktop"`）を結合したパスであり、`ferro_core::paths::app_data_dir()`が
+    使う`dirs::data_dir().join("ferro")`とは一致しない。実際に添付ファイルの「保存先を開く」等が
+    Windowsで動いていたのは、併記していたWindows決め打ちの絶対パスパターンのおかげ）。
+    Tauriの`$DATA`変数はバンドル識別子を挟まない素の`dirs::data_dir()`であり、
+    こちらが`app_data_dir()`の構成と全プラットフォームで一致するため、`$DATA/ferro/**`を
+    追加した（既存の`$APPDATA`/Windows決め打ちパターンは無害なので残置）。
+  - `keyring`crateはv4.2.0のデフォルトフィーチャに`zbus-secret-service-keyring-store`
+    （純Rust実装のD-Bus Secret Service連携）が既に含まれており、Linuxパスワード保存は
+    Cargo.toml変更なしで動く見込み（WSL等でSecret Serviceが無い場合の既知の問題は
+    上記の別項を参照）。
+  - `font-kit`（フォント一覧取得、`list_installed_fonts`コマンドで使用）はLinuxでは
+    Fontconfigバックエンドが自動選択される（Cargoフィーチャでの切り替え不要）が、
+    ビルド時に`libfontconfig1-dev`＋pkg-configがシステムに必要（README参照）。
+  - `native-tls`はLinux/BSDではOpenSSLに依存するため、システムのOpenSSL開発ヘッダ
+    （`libssl-dev`等）を要求しないよう`vendored`フィーチャを有効化し、ソースから
+    ビルド・静的リンクする方針にした（Windows/macOSは各OS標準機構を使うため無関係）。
+    代わりにビルド機にCコンパイラと`perl`が必要になるが、Tauri/GTK系の他のネイティブ
+    依存と同程度の要件なので追加負担にはならない見込み。
+  - `rusqlite`は元々`bundled`フィーチャでシステムSQLiteに依存しないため変更不要。
 
 ## 未決定・要検討事項
 
 - 上記のTantivy/IndexWriter信頼性問題への根本対応（現状はバッチ単位リトライ＋
   自己修復で緩和のみ。真因はWindows実機でしか再現しておらず未特定）
+- Linux対応は開発機がWindowsのため実機でのビルド・動作確認ができていない
+  （上記の対応は静的なコード/依存クレート調査のみ）。実機での検証待ち
 - CJKバイグラムトークナイザは実データでの検索体感（ノイズヒットの多さ等）を見て、
   必要なら形態素解析への切替を再検討する余地あり
 - 次に着手するテーマは都度相談して決める
