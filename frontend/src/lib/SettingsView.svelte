@@ -5,6 +5,13 @@
   import { invoke } from '@tauri-apps/api/core'
   import AccountsView from './AccountsView.svelte'
   import ColorRulesView from './ColorRulesView.svelte'
+  import {
+    applyAppearance,
+    THEME_OPTIONS,
+    ACCENT_COLOR_OPTIONS,
+    FONT_FAMILY_OPTIONS,
+    FONT_SIZE_OPTIONS,
+  } from './appearance.js'
 
   let {
     onBack = () => {},
@@ -31,6 +38,7 @@
   async function load() {
     try {
       settings = await invoke('get_settings')
+      applyAppearance(settings)
     } catch (e) {
       error = String(e)
     }
@@ -41,6 +49,24 @@
     if (!settings || saving) return
     const next = { ...settings, [key]: !settings[key] }
     settings = next
+    saving = true
+    try {
+      await invoke('update_settings', { settings: next })
+    } catch (e) {
+      error = String(e)
+    } finally {
+      saving = false
+    }
+  }
+
+  // テーマ/アクセントカラー/フォント/文字サイズは変更した瞬間に見た目へ
+  // 反映する（保存を待たず即座にプレビューできた方が、選んでいる最中に
+  // 分かりやすいため）。保存自体は他の設定と同じくupdate_settingsで行う。
+  async function updateAppearance(key, value) {
+    if (!settings || saving) return
+    const next = { ...settings, [key]: value }
+    settings = next
+    applyAppearance(next)
     saving = true
     try {
       await invoke('update_settings', { settings: next })
@@ -125,6 +151,75 @@
   />
 
   {#if settings}
+    <h2 class="section-title">外観</h2>
+    <div class="rows">
+      <div class="row">
+        <div class="text">
+          <div class="title">テーマ</div>
+          <div class="desc">「システムに合わせる」を選ぶとOSのダーク/ライト設定に追従します。</div>
+        </div>
+        <select
+          class="interval-select"
+          value={settings.theme}
+          onchange={(e) => updateAppearance('theme', e.target.value)}
+        >
+          {#each THEME_OPTIONS as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <div class="row">
+        <div class="text">
+          <div class="title">アクセントカラー</div>
+          <div class="desc">ボタンや選択中の項目などに使う差し色です。</div>
+        </div>
+        <div class="swatch-picker">
+          {#each ACCENT_COLOR_OPTIONS as opt (opt.value)}
+            <button
+              type="button"
+              class="swatch-button"
+              class:selected={settings.accent_color === opt.value}
+              style="background: {opt.value};"
+              title={opt.label}
+              aria-label={opt.label}
+              aria-pressed={settings.accent_color === opt.value}
+              onclick={() => updateAppearance('accent_color', opt.value)}
+            ></button>
+          {/each}
+        </div>
+      </div>
+      <div class="row">
+        <div class="text">
+          <div class="title">フォント</div>
+          <div class="desc">一覧・本文表示に使うフォントです。</div>
+        </div>
+        <select
+          class="interval-select"
+          value={settings.font_family}
+          onchange={(e) => updateAppearance('font_family', e.target.value)}
+        >
+          {#each FONT_FAMILY_OPTIONS as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+      <div class="row">
+        <div class="text">
+          <div class="title">文字サイズ</div>
+          <div class="desc">一覧・本文の文字の大きさです。</div>
+        </div>
+        <select
+          class="interval-select"
+          value={settings.font_size}
+          onchange={(e) => updateAppearance('font_size', e.target.value)}
+        >
+          {#each FONT_SIZE_OPTIONS as opt (opt.value)}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
+    </div>
+
     <h2 class="section-title">表示</h2>
     <div class="rows">
       {#each ROWS as row (row.key)}
@@ -235,6 +330,22 @@
     background: var(--surface);
     color: var(--text);
   }
+  .swatch-picker {
+    display: flex;
+    gap: 8px;
+    flex: none;
+  }
+  .swatch-button {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    padding: 0;
+  }
+  .swatch-button.selected {
+    border-color: var(--text);
+  }
   .lead {
     font-size: 13px;
     color: var(--text-muted);
@@ -273,7 +384,7 @@
     display: flex;
     align-items: center;
     padding: 2px;
-    background: #dedad0;
+    background: var(--border-strong);
     justify-content: flex-start;
     border: none;
     cursor: pointer;

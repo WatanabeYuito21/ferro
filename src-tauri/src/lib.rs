@@ -494,6 +494,10 @@ struct SettingsView {
     show_sender_avatar: bool,
     mark_read_delay: bool,
     sync_interval_minutes: i64,
+    theme: String,
+    accent_color: String,
+    font_family: String,
+    font_size: String,
 }
 
 impl From<Settings> for SettingsView {
@@ -503,6 +507,10 @@ impl From<Settings> for SettingsView {
             show_sender_avatar: s.show_sender_avatar,
             mark_read_delay: s.mark_read_delay,
             sync_interval_minutes: s.sync_interval_minutes,
+            theme: s.theme,
+            accent_color: s.accent_color,
+            font_family: s.font_family,
+            font_size: s.font_size,
         }
     }
 }
@@ -514,6 +522,10 @@ impl From<SettingsView> for Settings {
             show_sender_avatar: s.show_sender_avatar,
             mark_read_delay: s.mark_read_delay,
             sync_interval_minutes: s.sync_interval_minutes,
+            theme: s.theme,
+            accent_color: s.accent_color,
+            font_family: s.font_family,
+            font_size: s.font_size,
         }
     }
 }

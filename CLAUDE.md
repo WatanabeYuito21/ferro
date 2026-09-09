@@ -35,7 +35,14 @@
   現れない文字列を狙ったルールは効かない。以前は120文字だったため一部のルールが
   効かないという形で実際に踏み、500文字に広げると同時に`reindex_all`が
   Maildirから読み直した内容で既存メッセージの`preview`/`attachment_count`も
-  遡って更新するようにした）
+  遡って更新するようにした）、外観設定（テーマ: ライト/ダーク/システム追従、
+  アクセントカラー、フォント、文字サイズ。`ferro_core::db::settings::Settings`に
+  永続化し、フロント側の`frontend/src/lib/appearance.js`が`<html>`の
+  data属性とCSSカスタムプロパティ（`app.css`）を書き換えて反映する。
+  `--accent-hover`/`--accent-soft-bg`は固定値ではなく`color-mix()`で
+  `--accent`から動的導出するため、アクセントカラーを変えても一貫した
+  hover色・薄い背景色が得られる。当初「モックアップ自体がライトテーマのみの
+  設計」としてダークモード非対応だったが、外観設定の一部として追加した）
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`

@@ -169,13 +169,13 @@
     justify-content: center;
     gap: 3px;
     padding: 0 16px;
-    border-bottom: 1px solid #efede5;
+    border-bottom: 1px solid var(--border);
     box-sizing: border-box;
     overflow: hidden;
     cursor: pointer;
   }
   .row:hover {
-    background: #f4f2eb;
+    background: var(--surface-muted);
   }
   .line1 {
     display: flex;
@@ -188,7 +188,7 @@
     flex: none;
   }
   .from {
-    font-size: 13px;
+    font-size: calc(13px * var(--content-font-scale, 1));
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -197,12 +197,12 @@
     color: var(--text);
   }
   .date {
-    font-size: 11px;
+    font-size: calc(11px * var(--content-font-scale, 1));
     color: var(--text-faint);
     flex: none;
   }
   .subject {
-    font-size: 13px;
+    font-size: calc(13px * var(--content-font-scale, 1));
     margin-left: 14px;
     min-width: 0;
     overflow: hidden;
@@ -211,7 +211,7 @@
     color: var(--text);
   }
   .preview {
-    font-size: 12px;
+    font-size: calc(12px * var(--content-font-scale, 1));
     color: var(--text-muted);
     margin-left: 14px;
     min-width: 0;

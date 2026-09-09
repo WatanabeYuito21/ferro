@@ -288,7 +288,7 @@
   }
   .toolbar button {
     font-size: 12px;
-    color: #5a574f;
+    color: var(--text-secondary);
     border: 1px solid var(--border);
     border-radius: 7px;
     padding: 6px 12px;
@@ -351,7 +351,7 @@
     flex: 1;
   }
   h3 {
-    font-size: 22px;
+    font-size: calc(22px * var(--content-font-scale, 1));
   }
   .chips {
     display: flex;
@@ -368,7 +368,7 @@
     grid-template-columns: auto 1fr;
     gap: 0.15rem 0.75rem;
     margin: 0.75rem 0;
-    font-size: 13px;
+    font-size: calc(13px * var(--content-font-scale, 1));
   }
   dt {
     font-weight: 600;
@@ -408,9 +408,9 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.9rem;
-    font-size: 13.5px;
+    font-size: calc(13.5px * var(--content-font-scale, 1));
     line-height: 1.8;
-    color: #2e2c27;
+    color: var(--text);
   }
   .error {
     color: var(--danger);

@@ -150,7 +150,7 @@
     background: var(--surface-subtle);
   }
   .row.active {
-    background: #eaedeb;
+    background: var(--accent-soft-bg);
     color: var(--text);
     font-weight: 700;
   }
@@ -217,7 +217,7 @@
     border-radius: 7px;
   }
   .label-row.active .row-main {
-    background: #eaedeb;
+    background: var(--accent-soft-bg);
     color: var(--text);
     font-weight: 700;
   }
