@@ -154,6 +154,7 @@
   let unlistenBackgroundSync
   let unlistenSyncProgress
   let unlistenNavigate
+  let unlistenRetentionPurge
 
   onMount(async () => {
     try {
@@ -196,12 +197,21 @@
     unlistenNavigate = await listen('navigate', (event) => {
       currentView = event.payload
     })
+
+    // バックグラウンドのメール保持期間クリーンアップ(`spawn_retention_cleanup`)が
+    // 何か削除した時に発火する。一覧の再読み込みまではしない（頻度は低いが、
+    // 読んでいる最中に一覧のスクロール位置が急に変わる方が煩わしいため。
+    // 新着メールの通知バナーと同じ考え方）。件数だけ最新にしておく。
+    unlistenRetentionPurge = await listen('retention-purge', () => {
+      refreshFolderCounts()
+    })
   })
 
   onDestroy(() => {
     unlistenBackgroundSync?.()
     unlistenSyncProgress?.()
     unlistenNavigate?.()
+    unlistenRetentionPurge?.()
   })
 
   // AccountsView側のフォームからそのまま渡された値を受け取り、

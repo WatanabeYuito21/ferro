@@ -52,6 +52,20 @@
   （`appearance.js`）が常に`'指定名', 'Noto Sans JP', system-ui, sans-serif`
   というフォールバックチェーンを付けて適用するため、存在しないフォント名が
   入っていても表示が壊れることはない。
+  メールの保持期間（`Settings::retention_days`。日数。0が既定＝無期限で、
+  既存ユーザーが不意にメールを失わないようにしている）も設定できる。
+  `src-tauri`の`spawn_retention_cleanup`が6時間ごとにバックグラウンドで
+  `message_actions::purge_expired_batch`を呼び、`date_header`が保持期間より
+  古いメッセージをDB行・Maildirファイル・検索インデックスの全てから完全に
+  削除する（`set_deleted`の論理削除とは別物。ディスクを実際に回収する）。
+  スター付き(is_flagged=1)は保持期間に関わらず対象外にする安全策を入れている
+  （`idx_messages_retention`部分インデックス）。設定画面の「今すぐ整理する」
+  ボタン(`purge_expired_messages`コマンド)で即座に実行することもできる。
+  `list_older_than`は常に「date_headerが古い順のN件」を返すため、特定の
+  バッチのTantivy投入が繰り返し失敗した場合に後続の期限切れメッセージへ
+  永久に手が届かなくなる、という検索キャッチアップで踏んだのと同じ罠を
+  避けるため、`purge_expired_batch`も同じ「バッチ全体失敗→1件ずつ
+  フォールバック」の設計にしてある。
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`

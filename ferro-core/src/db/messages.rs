@@ -150,6 +150,30 @@ pub fn delete_all_for_account(conn: &Connection, account_id: i64) -> rusqlite::R
     Ok(())
 }
 
+/// メール保持期間のクリーンアップ用: `cutoff`より古い(date_header昇順で最大`limit`件の)
+/// メッセージを返す。スター付き(is_flagged=1)は保持期間に関わらず対象外にする
+/// （`idx_messages_retention`部分インデックス参照。is_deletedでは絞らない＝
+/// 既にソフト削除済みの古いメッセージも完全削除の対象に含める）。
+pub fn list_older_than(conn: &Connection, cutoff: i64, limit: u32) -> rusqlite::Result<Vec<Message>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages
+         WHERE date_header < ?1 AND is_flagged = 0
+         ORDER BY date_header ASC
+         LIMIT ?2"
+    ))?;
+    stmt.query_map(params![cutoff, limit], row_to_message)?.collect()
+}
+
+/// 指定したidのメッセージ行を完全に削除する（論理削除ではない）。
+/// `message_actions::purge_expired_batch`から、Maildirファイル・検索インデックス
+/// からの削除と合わせて呼ぶこと（ここではDB行しか消さない）。
+pub fn delete_by_ids(conn: &Connection, ids: &[i64]) -> rusqlite::Result<()> {
+    for id in ids {
+        conn.execute("DELETE FROM messages WHERE id = ?1", [id])?;
+    }
+    Ok(())
+}
+
 /// idの昇順で全件を漏れなく舐めるためのページネーション（全文検索インデックスの
 /// 再構築専用）。`list_recent`のdate_headerカーソルは値が重複しうるため
 /// 境界で取りこぼす可能性があるが、`id`は一意なのでこちらは完全に漏れなく辿れる。
@@ -849,6 +873,75 @@ mod tests {
         assert!(
             plan.iter().any(|line| line.contains("USING INDEX idx_messages_unindexed")),
             "expected the query to use idx_messages_unindexed, got plan: {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|line| line.contains("TEMP B-TREE")),
+            "expected no temp b-tree sort, got plan: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn list_older_than_excludes_starred_and_recent_messages() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let old = insert_msg(&conn, account_id, "old", 100);
+        let old_starred = insert_msg(&conn, account_id, "old-starred", 150);
+        set_flagged(&conn, old_starred, true).unwrap();
+        let recent = insert_msg(&conn, account_id, "recent", 1000);
+
+        let expired = list_older_than(&conn, 500, 10).unwrap();
+        assert_eq!(expired.iter().map(|m| m.id).collect::<Vec<_>>(), vec![old]);
+        let _ = recent; // 500より新しいので対象外であることの対比用
+    }
+
+    #[test]
+    fn list_older_than_includes_already_soft_deleted_messages() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let old_deleted = insert_msg(&conn, account_id, "old-deleted", 100);
+        set_deleted(&conn, old_deleted, true).unwrap();
+
+        let expired = list_older_than(&conn, 500, 10).unwrap();
+        assert_eq!(expired.iter().map(|m| m.id).collect::<Vec<_>>(), vec![old_deleted]);
+    }
+
+    #[test]
+    fn delete_by_ids_removes_only_the_given_rows() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let a = insert_msg(&conn, account_id, "a", 100);
+        let b = insert_msg(&conn, account_id, "b", 200);
+
+        delete_by_ids(&conn, &[a]).unwrap();
+
+        assert!(get(&conn, a).unwrap().is_none());
+        assert!(get(&conn, b).unwrap().is_some());
+    }
+
+    #[test]
+    fn list_older_than_query_uses_index_and_never_sorts_with_temp_btree() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        for i in 0..20 {
+            insert_msg(&conn, account_id, &format!("u{i}"), i);
+        }
+
+        let explain_sql = format!(
+            "EXPLAIN QUERY PLAN SELECT {MESSAGE_COLUMNS} FROM messages
+             WHERE date_header < ?1 AND is_flagged = 0
+             ORDER BY date_header ASC
+             LIMIT ?2"
+        );
+        let mut stmt = conn.prepare(&explain_sql).unwrap();
+        let plan: Vec<String> = stmt
+            .query_map(params![1_000_000_000i64, 10u32], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+
+        assert!(
+            plan.iter().any(|line| line.contains("USING INDEX idx_messages_retention")),
+            "expected the query to use idx_messages_retention, got plan: {plan:?}"
         );
         assert!(
             !plan.iter().any(|line| line.contains("TEMP B-TREE")),
