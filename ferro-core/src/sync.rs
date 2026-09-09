@@ -75,17 +75,39 @@ pub fn sync_account_with_limit(
     let mut budget = limit;
     let mut reconnects = 0u32;
 
+    // CONNECT/USER/PASS/UIDLの段階での切断は、以前は`fetch_and_store`中のRETR
+    // パイプライン切断と違って即座にエラーを返していた（他人のレンタルサーバー環境で
+    // 実際に"connection closed by server"として踏んだ）。ここも同じ再接続予算
+    // （`MAX_RECONNECTS`）を共有してリトライする。ハンドシェイク段階では
+    // まだ何も取得できていないため、予算を使い切った場合はfetch_and_store側の
+    // ような`ended_early`付きの部分成功では表現できず、そのままエラーを返す。
+    macro_rules! try_or_reconnect {
+        ($e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(e) if is_disconnect(&e) => {
+                    reconnects += 1;
+                    if reconnects > MAX_RECONNECTS {
+                        return Err(e.into());
+                    }
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
+    }
+
     loop {
-        let mut client = Pop3Client::connect(
+        let mut client = try_or_reconnect!(Pop3Client::connect(
             &account.host,
             account.port,
             account.use_tls,
             allow_plaintext,
-        )?;
-        client.user(&account.username)?;
-        client.pass(password)?;
+        ));
+        try_or_reconnect!(client.user(&account.username));
+        try_or_reconnect!(client.pass(password));
 
-        let server_uidls = client.uidl()?;
+        let server_uidls = try_or_reconnect!(client.uidl());
         let mut pending = Vec::new();
         for (msg_num, uidl) in server_uidls {
             if !messages::exists_by_uidl(conn, account.id, &uidl)? {
