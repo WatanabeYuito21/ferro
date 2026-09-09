@@ -66,6 +66,17 @@
   永久に手が届かなくなる、という検索キャッチアップで踏んだのと同じ罠を
   避けるため、`purge_expired_batch`も同じ「バッチ全体失敗→1件ずつ
   フォールバック」の設計にしてある。
+- `ferro-tui`: `ratatui`+`crossterm`によるTUI版（neomutt的な使い方を想定。
+  CLAUDE.md冒頭の「既存のneomutt」への言及どおり）。GUIと同じ`ferro-core`を
+  土台にし、同じDB/Maildir/検索インデックス/`accounts.toml`/`color_rules.toml`を
+  共有する。3ペイン構成（フォルダ/ラベル｜メッセージ一覧｜本文）、既読/スター/
+  アーカイブ/削除/スヌーズ、検索（`/`キー、Tantivyへの都度クエリで即時反映）、
+  全アカウント手動同期を実装済み。バックグラウンドスレッド（同期・検索
+  キャッチアップ・保持期間クリーンアップ）は`src-tauri`の対応する関数の移植
+  （Tauriの`AppHandle::emit`の代わりに`std::sync::mpsc`でメインループへ通知する。
+  `ferro-tui/src/background.rs`参照）。設定画面は現状「表示のみ」（トグル/数値の
+  編集、色分けルールの追加/削除、アカウント管理フォームは未実装。フォーム入力が
+  要るこれらは今後のフェーズで対応予定）。
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`
@@ -81,8 +92,9 @@
 ## 技術スタック方針
 
 - **アプリフレームワーク**: Tauri（Chromiumを内包しないため軽量。バックエンドはRust）。
-  Cargoワークスペース構成（`ferro-core`=POP3/DB/Maildir/検索ロジックのライブラリ、`ferro-cli`=CLI、`src-tauri`=Tauriアプリ）とし、
-  CLIとGUIが同じDB/Maildir/検索インデックスのパスを共有できるようにする
+  Cargoワークスペース構成（`ferro-core`=POP3/DB/Maildir/検索ロジックのライブラリ、`ferro-cli`=CLI、
+  `ferro-tui`=ratatui製TUI、`src-tauri`=Tauriアプリ）とし、
+  CLI・TUI・GUIが同じDB/Maildir/検索インデックスのパスを共有できるようにする
 - **フロントエンド**: Svelte（Vite）を採用予定。仮想スクロールは自前実装（固定行高ウィンドウイング + 無限スクロールページング）とする
 - **メタデータDB**: SQLite（From/To/Subject/Date/フラグ/スレッドIDなどを構造化して保持。一覧・ソート・フィルタ用）。
   一覧取得はOFFSETではなくキーセットページネーション（`date_header`カーソル）を使う方針

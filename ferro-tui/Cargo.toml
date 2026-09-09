@@ -1,0 +1,16 @@
+[package]
+name = "ferro-tui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ferro-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+crossterm = "0.29.0"
+ferro-core = { path = "../ferro-core" }
+ratatui = "0.30"
+tui-input = { version = "0.15.4", default-features = false, features = ["ratatui-crossterm"] }
+unicode-width = "0.2"
