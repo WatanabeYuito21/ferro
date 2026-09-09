@@ -41,6 +41,24 @@ pub enum SearchError {
     LockPoisoned,
     #[error("search index writer is unavailable (a previous recovery attempt failed)")]
     WriterUnavailable,
+    /// `open_or_create`が`IndexWriter`を取得できなかった場合。生のTantivyエラー
+    /// （"Could not acquire lock..."）だけだと、原因が「別のFerroプロセス
+    /// （CLI/TUI/GUI。全て同じ検索インデックスディレクトリを共有する設計。
+    /// CLAUDE.md参照）が既に開いている」のか「以前のプロセスが異常終了して
+    /// ロックファイルが残っている」のか区別できず、対処のしようがない
+    /// （実際にTUIをテスト中に強制終了させたことでこの状態を踏み、無関係な
+    /// GUIが原因不明のパニックで起動できなくなった）。両方の可能性と対処法を
+    /// 案内するメッセージに読み替える。
+    #[error(
+        "search index is locked by another process: {path}\n\
+         Ferro（CLI/TUI/GUI）は検索インデックスを同時に1つのプロセスからしか開けません。\n\
+         他のFerroプロセスが起動していないか確認してください。\n\
+         それでも解決しない場合は、以前のプロセスが異常終了した際のロックファイルが\n\
+         残っている可能性があります。{path} 内の *.lock ファイル（もしくはこの\n\
+         ディレクトリ自体）を削除してください。検索インデックスはSQLite/Maildirから\n\
+         再構築可能な派生キャッシュなので、削除しても安全です。"
+    )]
+    WriterLockBusy { path: std::path::PathBuf },
 }
 
 pub type Result<T> = std::result::Result<T, SearchError>;
@@ -162,7 +180,20 @@ impl SearchIndex {
             Err(e) => return Err(e.into()),
         };
 
-        Self::from_index(index, fields)
+        Self::from_index(index, fields).map_err(|e| Self::annotate_lock_error(e, path))
+    }
+
+    /// `from_index`が`IndexWriter`取得時にロック競合(`LockBusy`)で失敗した場合、
+    /// `WriterLockBusy`に読み替える（`SearchError::WriterLockBusy`のドキュメント参照）。
+    fn annotate_lock_error(err: SearchError, path: &Path) -> SearchError {
+        use tantivy::TantivyError;
+        use tantivy::directory::error::LockError;
+        match err {
+            SearchError::Tantivy(TantivyError::LockFailure(LockError::LockBusy, _)) => {
+                SearchError::WriterLockBusy { path: path.to_path_buf() }
+            }
+            other => other,
+        }
     }
 
     /// テスト専用のインメモリインデックス。実ファイルI/Oが要らないテストは

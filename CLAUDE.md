@@ -184,6 +184,21 @@
 - **SQLiteのクエリで`(?1 IS NULL OR col = ?1)`のようなOR分岐を書くと**、インデックスを使った
   範囲検索（SEARCH）ではなくCOVERING SCAN + 一時B-treeソートにフォールバックしやすい。
   新しいクエリを書く際は`EXPLAIN QUERY PLAN`で`SCAN`ではなく`SEARCH`になっているか確認すること。
+- **検索インデックス(Tantivy)はCLI/TUI/GUIの間で同時に1つのプロセスからしか開けない**:
+  `SearchIndex::open_or_create`は読み取り専用の用途でも内部で`IndexWriter`を作る
+  （`from_index`参照）ため、別のFerroプロセスが同じ`search_index`ディレクトリを
+  既に開いていると`LockFailure(LockBusy, ...)`で失敗する。DB(SQLite/WAL)や
+  `accounts.toml`と違い、複数プロセスからの同時アクセスを想定していない。
+  さらに、プロセスが正常終了せず強制終了された場合（実際にTUIの動作確認中に
+  `timeout`コマンドで強制終了させて踏んだ）、ロックファイル
+  （`search_indexディレクトリ`内の`*.lock`）が残ったままになり、以後**無関係な
+  別のFerroプロセス（例: GUI）まで**同じエラーで起動できなくなることがある。
+  生のTantivyエラーだと原因（本当に別プロセスが起動中なのか、単に前回の
+  ロックファイルが残っているだけなのか）が区別できず対処のしようがないため、
+  `SearchError::WriterLockBusy`に読み替えて両方の可能性と対処法（他のFerro
+  プロセスが起動していないか確認する／それでも直らなければ`*.lock`ファイルか
+  `search_index`ディレクトリ自体を削除する。SQLite/Maildirから再構築可能な
+  派生キャッシュなので安全）を案内するようにしてある。
 - **`messages.account_id`は`accounts.id`への外部キーだが`ON DELETE CASCADE`を付けていない**ため、
   `foreign_keys=ON`の下では、メッセージが1件でも残っているアカウントを`db::accounts::delete`
   単体で消そうとすると外部キー制約違反で失敗する（実際に踏んだ罠。アカウント削除機能を
