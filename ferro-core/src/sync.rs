@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use rusqlite::Connection;
 
@@ -28,6 +29,21 @@ const SEARCH_COMMIT_BATCH_SIZE: usize = 500;
 /// 1回の同期呼び出しで許容する再接続回数の上限。これを超えたら諦めて
 /// 途中経過を返す（UIDL差分方式なので次回のsync呼び出しで安全に続きから拾われる）。
 const MAX_RECONNECTS: u32 = 5;
+
+/// 再接続前に待機する基準時間（試行回数に比例させる簡易的な指数バックオフ。
+/// `search::with_commit_retry`と同じ考え方）。以前は再接続を待機無しで
+/// 即座に行っており、実サーバー相手に短時間で6回連続接続を試みる格好に
+/// なっていた（レンタルサーバー宛のアカウントで実際に踏んだ）。もし
+/// サーバー側やその手前のファイアウォールが短時間の異常接続パターンを
+/// 検知して防御的にブロックしているのだとしたら、間隔を空けずに再接続
+/// し続けることはむしろ状況を悪化させかねないため、行儀の良いクライアントで
+/// あるよう最低限の間隔を空ける。テストではこの待機自体を検証したいわけではなく、
+/// 実時間で待つとテストスイートが遅くなるだけなので、テストビルドでは
+/// 極小の値にする。
+#[cfg(not(test))]
+const RECONNECT_BASE_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const RECONNECT_BASE_DELAY: Duration = Duration::from_millis(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -108,6 +124,7 @@ pub fn sync_account_with_limit(
                     if give_up {
                         return Err(e.into());
                     }
+                    std::thread::sleep(RECONNECT_BASE_DELAY * reconnects);
                     continue;
                 }
                 Err(e) => return Err(e.into()),
@@ -184,6 +201,7 @@ pub fn sync_account_with_limit(
                     ended_early: true,
                 });
             }
+            std::thread::sleep(RECONNECT_BASE_DELAY * reconnects);
             continue;
         }
 
@@ -215,6 +233,7 @@ pub fn sync_account_with_limit(
                 if give_up {
                     return Err(e.into());
                 }
+                std::thread::sleep(RECONNECT_BASE_DELAY * reconnects);
                 continue;
             }
             Err(e) => return Err(e.into()),
@@ -281,6 +300,7 @@ pub fn sync_account_with_limit(
                 ended_early: true,
             });
         }
+        std::thread::sleep(RECONNECT_BASE_DELAY * reconnects);
     }
 }
 
