@@ -8,6 +8,7 @@
   import SettingsView from './lib/SettingsView.svelte'
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
+  import { applyAppearance } from './lib/appearance.js'
 
   // Add account/Account listはメニューバー(View > Manage Accounts…)から開く
   // 別画面として切り出している（`navigate`イベントで切り替える。下のonMount参照）。
@@ -85,6 +86,7 @@
   async function refreshSettings() {
     try {
       settings = await invoke('get_settings')
+      applyAppearance(settings)
     } catch (e) {
       error = String(e)
     }
@@ -562,7 +564,7 @@
     box-sizing: border-box;
   }
   .result-row:hover {
-    background: #f4f2eb;
+    background: var(--surface-muted);
   }
   .search-results .from {
     flex: 0 0 160px;

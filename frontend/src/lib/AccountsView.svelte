@@ -278,7 +278,7 @@
   }
   .account-actions button {
     font-size: 12px;
-    color: #5a574f;
+    color: var(--text-secondary);
     border: 1px solid var(--border);
     border-radius: 7px;
     padding: 6px 12px;

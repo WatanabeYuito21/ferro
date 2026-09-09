@@ -1,7 +1,13 @@
 /* Kotori Mailモックアップ(mocup/メーラーモックアップ確認フォーム/Kotori Mail.dc.html)から
-   抽出した配色・フォント。アクセント色は選定済みの深緑 #3F6B5C 固定
-   （モックアップの4色選択肢のうち、暖色背景・「Kotori」の名前に馴染むという理由で選んだ）。
-   モックアップ自体がライトテーマのみの設計のため、ダークモードは今回は対応しない。 */
+   抽出した配色・フォント。ライトパレットが基本形（デフォルト）で、ダークテーマ・
+   アクセントカラー・フォント・文字サイズは設定画面から変更できる
+   （`frontend/src/lib/appearance.js`が<html>のdata属性とCSSカスタムプロパティを
+   書き換えることで反映する。DB側の永続化は`ferro_core::db::settings::Settings`）。
+
+   --accent-hover/--accent-soft-bg は固定値ではなく`color-mix()`で--accentから
+   動的に導出する。ユーザーがどのアクセントカラーを選んでも、そこから一貫した
+   hover色・薄い背景色が得られ、かつライト/ダーク双方の--surfaceに自然になじむ
+   （--surfaceそのものがテーマで変わるため、soft-bgも自動的に追従する）。 */
 :root {
   --bg: #edebe4;
   --surface: #ffffff;
@@ -16,12 +22,17 @@
   --text-faint: #9a968c;
 
   --accent: #3f6b5c;
-  --accent-hover: #2d4e42;
-  --accent-soft-bg: #dce5e0;
+  --accent-hover: color-mix(in srgb, var(--accent) 78%, black);
+  --accent-soft-bg: color-mix(in srgb, var(--accent) 16%, var(--surface));
   --danger: #b00020;
 
   --font-sans: 'Noto Sans JP', system-ui, 'Segoe UI', Roboto, sans-serif;
   --font-serif: 'Instrument Serif', serif;
+
+  /* 文字サイズ設定(小/中/大)のスケール係数。読む本文が主対象で、
+     ボタン等のUI要素は対象外（`--content-font-scale`を参照している
+     箇所だけ影響を受ける）。 */
+  --content-font-scale: 1;
 
   color-scheme: light;
   font-family: var(--font-sans);
@@ -29,6 +40,54 @@
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+:root[data-font-size='small'] {
+  --content-font-scale: 0.9;
+}
+:root[data-font-size='large'] {
+  --content-font-scale: 1.15;
+}
+
+/* システム追従(data-theme未設定 = "system")時はOSのダークモード設定に従う。
+   明示的に"light"が選ばれている間は、OS側がダークでもライトのままにする。 */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #1c1a16;
+    --surface: #242118;
+    --surface-muted: #2c2820;
+    --surface-subtle: #211e17;
+    --border: #3a352a;
+    --border-strong: #4a4436;
+
+    --text: #ece7dc;
+    --text-secondary: #c7c0b0;
+    --text-muted: #96907e;
+    --text-faint: #6e6857;
+
+    --danger: #ff6b6b;
+
+    color-scheme: dark;
+  }
+}
+
+/* 明示的に"dark"が選ばれている場合はOS設定に関わらずこちらを使う。 */
+:root[data-theme='dark'] {
+  --bg: #1c1a16;
+  --surface: #242118;
+  --surface-muted: #2c2820;
+  --surface-subtle: #211e17;
+  --border: #3a352a;
+  --border-strong: #4a4436;
+
+  --text: #ece7dc;
+  --text-secondary: #c7c0b0;
+  --text-muted: #96907e;
+  --text-faint: #6e6857;
+
+  --danger: #ff6b6b;
+
+  color-scheme: dark;
 }
 
 html,
