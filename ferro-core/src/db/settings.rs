@@ -31,6 +31,13 @@ pub struct Settings {
     pub font_family: String,
     /// "small" | "medium" | "large"。
     pub font_size: String,
+    /// メールの保持日数。0は「無期限（自動削除しない）」を意味する
+    /// （デフォルト。既存ユーザーが不意にメールを失わないよう、明示的に
+    /// 設定しない限り何も消さない）。正の値を設定すると、`date_header`が
+    /// その日数より前のメッセージを完全に削除する対象にする
+    /// （`message_actions::purge_expired_batch`参照。スター付きは例外的に
+    /// 保持日数に関わらず対象外）。
+    pub retention_days: i64,
 }
 
 impl Default for Settings {
@@ -44,6 +51,7 @@ impl Default for Settings {
             accent_color: "#3f6b5c".to_string(),
             font_family: "Noto Sans JP".to_string(),
             font_size: "medium".to_string(),
+            retention_days: 0,
         }
     }
 }
@@ -56,6 +64,7 @@ const KEY_THEME: &str = "theme";
 const KEY_ACCENT_COLOR: &str = "accent_color";
 const KEY_FONT_FAMILY: &str = "font_family";
 const KEY_FONT_SIZE: &str = "font_size";
+const KEY_RETENTION_DAYS: &str = "retention_days";
 
 const VALID_THEMES: [&str; 3] = ["light", "dark", "system"];
 const VALID_FONT_SIZES: [&str; 3] = ["small", "medium", "large"];
@@ -105,6 +114,15 @@ pub fn get(conn: &Connection) -> rusqlite::Result<Settings> {
                     settings.font_size = value;
                 }
             }
+            KEY_RETENTION_DAYS => {
+                // 負の値・パース失敗は無視して0(無期限)のまま
+                // （不正な値のせいで意図せず大量削除が走ることが無いように）。
+                if let Ok(days) = value.parse::<i64>()
+                    && days >= 0
+                {
+                    settings.retention_days = days;
+                }
+            }
             _ => {}
         }
     }
@@ -130,6 +148,7 @@ pub fn set(conn: &Connection, settings: &Settings) -> rusqlite::Result<()> {
         (KEY_ACCENT_COLOR, settings.accent_color.clone()),
         (KEY_FONT_FAMILY, settings.font_family.clone()),
         (KEY_FONT_SIZE, settings.font_size.clone()),
+        (KEY_RETENTION_DAYS, settings.retention_days.to_string()),
     ];
     for (key, value) in string_entries {
         conn.execute(
@@ -164,6 +183,7 @@ mod tests {
             accent_color: "#2255aa".to_string(),
             font_family: "monospace".to_string(),
             font_size: "large".to_string(),
+            retention_days: 90,
         };
         set(&conn, &custom).unwrap();
         assert_eq!(get(&conn).unwrap(), custom);
@@ -182,6 +202,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(get(&conn).unwrap().sync_interval_minutes, 5);
+    }
+
+    /// 負の保持日数やパース不能な値のせいで意図せず大量削除が走ることが
+    /// 無いよう、既定の0(無期限)にフォールバックすることを確認する。
+    #[test]
+    fn invalid_retention_days_falls_back_to_unlimited() {
+        let conn = open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('retention_days', '-1')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(get(&conn).unwrap().retention_days, 0);
+
+        conn.execute(
+            "UPDATE settings SET value = 'not-a-number' WHERE key = 'retention_days'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(get(&conn).unwrap().retention_days, 0);
     }
 
     #[test]

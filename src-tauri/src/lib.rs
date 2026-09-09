@@ -498,6 +498,7 @@ struct SettingsView {
     accent_color: String,
     font_family: String,
     font_size: String,
+    retention_days: i64,
 }
 
 impl From<Settings> for SettingsView {
@@ -511,6 +512,7 @@ impl From<Settings> for SettingsView {
             accent_color: s.accent_color,
             font_family: s.font_family,
             font_size: s.font_size,
+            retention_days: s.retention_days,
         }
     }
 }
@@ -526,6 +528,7 @@ impl From<SettingsView> for Settings {
             accent_color: s.accent_color,
             font_family: s.font_family,
             font_size: s.font_size,
+            retention_days: s.retention_days,
         }
     }
 }
@@ -738,6 +741,48 @@ async fn reindex_all(app: AppHandle) -> Result<usize, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// メール保持期間（`db::settings::Settings::retention_days`）が切れたメッセージを
+/// まとめて完全に削除する（設定画面の「今すぐ整理する」ボタン用）。
+/// `spawn_retention_cleanup`が定期的に同じ処理をバックグラウンドで行うが、
+/// 保持日数を変更した直後にすぐ効果を見たい場合のためにも手動実行できるようにする。
+/// 保持日数が0(無期限)の場合は何もせず0を返す。
+#[tauri::command]
+async fn purge_expired_messages(app: AppHandle) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let retention_days = {
+            let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
+            db::settings::get(&conn).map_err(|e| e.to_string())?.retention_days
+        };
+        if retention_days <= 0 {
+            return Ok(0);
+        }
+        let cutoff = now_unix() - retention_days * 24 * 60 * 60;
+
+        let mut total = 0usize;
+        loop {
+            let purged = {
+                let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+                ferro_core::message_actions::purge_expired_batch(
+                    &conn,
+                    &paths::maildir_dir(),
+                    &state.search_index,
+                    cutoff,
+                    500,
+                )
+                .map_err(|e| e.to_string())?
+            };
+            if purged == 0 {
+                break;
+            }
+            total += purged;
+        }
+        Ok(total)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Serialize, Clone)]
 struct BackgroundSyncEvent {
     account_id: i64,
@@ -870,6 +915,72 @@ fn spawn_initial_search_catchup(app_handle: AppHandle) {
     });
 }
 
+/// メール保持期間（`db::settings::Settings::retention_days`）のバックグラウンド
+/// 掃除スレッド。起動直後に一度、以後は`RETENTION_CHECK_INTERVAL`ごとに実行する
+/// （保持日数は同期間隔ほど頻繁に変える設定ではないと想定されるため、短い間隔は
+/// 不要。すぐに効果を見たい場合は設定画面の「今すぐ整理する」ボタン
+/// (`purge_expired_messages`コマンド)を使う）。
+const RETENTION_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
+fn spawn_retention_cleanup(app_handle: AppHandle) {
+    std::thread::spawn(move || {
+        loop {
+            run_retention_cleanup_once(&app_handle);
+            std::thread::sleep(RETENTION_CHECK_INTERVAL);
+        }
+    });
+}
+
+fn run_retention_cleanup_once(app_handle: &AppHandle) {
+    let state = app_handle.state::<AppState>();
+    let retention_days = {
+        let Ok(conn) = state.read_conn.lock() else {
+            return;
+        };
+        match db::settings::get(&conn) {
+            Ok(settings) => settings.retention_days,
+            Err(_) => return,
+        }
+    };
+    // 0(無期限)がデフォルト。既存ユーザーが明示的に設定しない限り何も削除しない。
+    if retention_days <= 0 {
+        return;
+    }
+    let cutoff = now_unix() - retention_days * 24 * 60 * 60;
+
+    let mut total = 0usize;
+    loop {
+        let purged = {
+            let Ok(conn) = state.write_conn.lock() else {
+                return;
+            };
+            match ferro_core::message_actions::purge_expired_batch(
+                &conn,
+                &paths::maildir_dir(),
+                &state.search_index,
+                cutoff,
+                500,
+            ) {
+                Ok(n) => n,
+                // ベストエフォート。次回の定期実行で再挑戦する。
+                Err(_) => return,
+            }
+        };
+        if purged == 0 {
+            break;
+        }
+        total += purged;
+    }
+    if total > 0 {
+        let _ = app_handle.emit("retention-purge", RetentionPurgeEvent { purged: total });
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct RetentionPurgeEvent {
+    purged: usize,
+}
+
 fn run_background_sync_once(app_handle: &AppHandle) {
     let state = app_handle.state::<AppState>();
 
@@ -994,6 +1105,7 @@ pub fn run() {
         .setup(|app| {
             spawn_background_sync(app.handle().clone());
             spawn_initial_search_catchup(app.handle().clone());
+            spawn_retention_cleanup(app.handle().clone());
 
             let messages_item = MenuItemBuilder::with_id(NAV_MESSAGES_ID, "Messages").build(app)?;
             let settings_item = MenuItemBuilder::with_id(NAV_SETTINGS_ID, "Settings…").build(app)?;
@@ -1025,6 +1137,7 @@ pub fn run() {
             sync_account,
             search_messages,
             reindex_all,
+            purge_expired_messages,
             get_message_detail,
             save_attachment,
             set_read,

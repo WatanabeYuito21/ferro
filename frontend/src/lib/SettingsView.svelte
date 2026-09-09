@@ -123,6 +123,41 @@
     }
   }
 
+  // 0 = 無期限（自動削除しない）。既存ユーザーが不意にメールを失わないよう
+  // 既定値も0にしている（db::settings::Settingsのドキュメント参照）。
+  async function updateRetentionDays(days) {
+    if (!settings || saving) return
+    const next = { ...settings, retention_days: days }
+    settings = next
+    saving = true
+    try {
+      await invoke('update_settings', { settings: next })
+    } catch (e) {
+      error = String(e)
+    } finally {
+      saving = false
+    }
+  }
+
+  let purging = $state(false)
+  let purgeStatus = $state('')
+
+  async function runPurge() {
+    purging = true
+    purgeStatus = '整理中…'
+    try {
+      const count = await invoke('purge_expired_messages')
+      purgeStatus =
+        settings.retention_days > 0
+          ? `${count}件を削除しました`
+          : '保持期間が無期限のため、何も削除されませんでした'
+    } catch (e) {
+      purgeStatus = `エラー: ${e}`
+    } finally {
+      purging = false
+    }
+  }
+
   const ROWS = [
     {
       key: 'show_preview_line',
@@ -299,6 +334,42 @@
       {/if}
     </div>
 
+    <h2 class="section-title">保持期間</h2>
+    <div class="rows">
+      <div class="row">
+        <div class="text">
+          <div class="title">メールの保持日数</div>
+          <div class="desc">
+            指定した日数より古いメールを、6時間ごとにローカルから完全に削除します
+            （復元できません。スター付きのメールは保持日数に関わらず削除されません）。
+            0は無期限（自動削除しない）です。
+          </div>
+        </div>
+        <input
+          type="number"
+          class="interval-select retention-input"
+          min="0"
+          step="1"
+          value={settings.retention_days}
+          onchange={(e) => updateRetentionDays(Math.max(0, Number(e.target.value) || 0))}
+        />
+      </div>
+      <div class="row">
+        <div class="text">
+          <div class="title">今すぐ整理する</div>
+          <div class="desc">
+            次回のバックグラウンド実行を待たず、保持日数を過ぎたメールを今すぐ削除します。
+          </div>
+        </div>
+        <button type="button" class="action-button danger" onclick={runPurge} disabled={purging}>
+          今すぐ整理する
+        </button>
+      </div>
+      {#if purgeStatus}
+        <p class="reindex-status">{purgeStatus}</p>
+      {/if}
+    </div>
+
     <h2 class="section-title">色分けルール</h2>
     <ColorRulesView
       rules={colorRules}
@@ -435,6 +506,14 @@
   .action-button:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+  .action-button.danger {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .retention-input {
+    width: 70px;
+    text-align: right;
   }
   .reindex-status {
     margin: 8px 0 0;
