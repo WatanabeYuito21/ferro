@@ -85,6 +85,18 @@
   存在自体を「移行済み」の目印にする）。旧`settings`テーブル自体は当面
   DBスキーマに残すが、以後この移行関数以外からは読み書きしない
   （ドロップは将来の掃除タイミングで検討）。
+- **バージョン表示**（v0.0.8）: CLI/TUI/GUIそれぞれの実行ファイルから、
+  アプリ側でバージョンを確認できるようにした。ワークスペース全体が
+  `version.workspace = true`で単一バージョンを共有しているため、各バイナリの
+  `env!("CARGO_PKG_VERSION")`（コンパイル時にそのクレート自身のCargo.tomlから
+  埋め込まれる）を参照するだけで揃う。`ferro-cli`は`#[command(version)]`で
+  clap標準の`--version`/`-V`を有効化。`ferro-tui`はclapを新たに依存に足す
+  ほどではないため、`main()`冒頭で`std::env::args()`を素朴に見て
+  `--version`/`-V`を検出する簡易実装＋設定画面にも表示する。GUIは
+  Tauri組み込みの`app`プラグイン（`getVersion()`）を使うと権限設定
+  （capabilities）が別途要るため、他の`*_config_path`コマンドと同じ
+  「自前コマンドでビルド時定数を返すだけ」パターン（`app_version`コマンド）
+  に揃え、設定画面の見出し横に表示する。
 - **診断ログ**（`ferro_core::logging`）: v0.0.2をレンタルサーバー宛のアカウントで
   試した第三者から"connection closed by server"の報告を受けたが、それまで
   Ferroは同期エラーをGUIの一時的なトースト通知（閉じたら消える）やCLI/TUIの

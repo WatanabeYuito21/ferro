@@ -11,7 +11,7 @@ use ferro_core::search::SearchIndex;
 use ferro_core::{credentials, paths, reindex, sync};
 
 #[derive(Parser)]
-#[command(name = "ferro", about = "1000万件規模でも高速に動くPOP3メーラー(CLI)")]
+#[command(name = "ferro", version, about = "1000万件規模でも高速に動くPOP3メーラー(CLI)")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

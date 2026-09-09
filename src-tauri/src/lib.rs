@@ -626,6 +626,15 @@ fn log_file_path() -> String {
     paths::log_path().display().to_string()
 }
 
+/// 設定画面にアプリのバージョンを表示するために使う。Tauri組み込みの
+/// `app`プラグイン（`getVersion()`）を使うと権限設定が別途要るため、
+/// 他の`*_path`コマンドと同じ「自前コマンドでビルド時定数を返すだけ」
+/// パターンに揃えた。
+#[tauri::command]
+fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 /// 色分けルール(`color_rules.toml`)を読み込む。実際のマッチ判定はフロント側
 /// （`colorRules.js`）が行うので、ここは読み込んだ内容をそのまま返すだけ。
 /// GUI起動時の初回読み込みと、手編集後の「再読み込み」ボタンの両方で使う。
@@ -1157,6 +1166,7 @@ pub fn run() {
             reload_accounts_config,
             accounts_config_path,
             log_file_path,
+            app_version,
             get_color_rules,
             add_color_rule,
             remove_color_rule,

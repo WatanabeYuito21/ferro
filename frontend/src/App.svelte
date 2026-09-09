@@ -57,6 +57,7 @@
   let reloadingConfig = false
   let reloadConfigStatus = ''
   let logFilePath = ''
+  let appVersion = ''
 
   // 特定文字列を含むメッセージの一覧表示を色分けするルール(color_rules.toml)。
   // MessageListと検索結果一覧(下の方)の両方で使うため、labels/folderCounts同様
@@ -163,6 +164,7 @@
       accountsConfigPath = await invoke('accounts_config_path')
       colorRulesConfigPath = await invoke('color_rules_config_path')
       logFilePath = await invoke('log_file_path')
+      appVersion = await invoke('app_version')
       await Promise.all([refreshFolderCounts(), refreshLabels(), refreshSettings(), refreshColorRules()])
     } catch (e) {
       error = String(e)
@@ -350,6 +352,7 @@
           onRemoveColorRule={removeColorRule}
           onReloadColorRules={refreshColorRules}
           {logFilePath}
+          {appVersion}
           onBack={() => {
             currentView = 'messages'
             refreshSettings()
