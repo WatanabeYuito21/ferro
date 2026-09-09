@@ -42,7 +42,16 @@
   `--accent-hover`/`--accent-soft-bg`は固定値ではなく`color-mix()`で
   `--accent`から動的導出するため、アクセントカラーを変えても一貫した
   hover色・薄い背景色が得られる。当初「モックアップ自体がライトテーマのみの
-  設計」としてダークモード非対応だったが、外観設定の一部として追加した）
+  設計」としてダークモード非対応だったが、外観設定の一部として追加した）。
+  フォントは当初4種→8種の固定候補だったが、「PCにインストールされてる
+  フォントから選べるといい」という要望を受け、`font-kit`crate
+  （`src-tauri`のみに追加。Windowsでは追加のネイティブライブラリ無しで
+  DirectWriteバックエンドが使われる）でOS側のフォント一覧を列挙する
+  `list_installed_fonts`コマンドに置き換えた。`Settings::font_family`は
+  固定候補ではなく任意の文字列（実際のフォント名）を受け付け、フロント側
+  （`appearance.js`）が常に`'指定名', 'Noto Sans JP', system-ui, sans-serif`
+  というフォールバックチェーンを付けて適用するため、存在しないフォント名が
+  入っていても表示が壊れることはない。
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`

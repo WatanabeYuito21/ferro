@@ -4,19 +4,16 @@
 // App.svelte(起動時・設定画面から戻った時)とSettingsView.svelte(設定変更の
 // 都度、即座にプレビューさせるため)の両方から呼ぶ。
 
-const FONT_STACKS = {
-  'noto-sans': "'Noto Sans JP', system-ui, 'Segoe UI', Roboto, sans-serif",
-  'yu-gothic': "'Yu Gothic', 'YuGothic', system-ui, 'Segoe UI', sans-serif",
-  meiryo: "Meiryo, 'MS PGothic', system-ui, sans-serif",
-  monospace: "'Cascadia Code', Consolas, 'MS Gothic', monospace",
-}
+// フォントは固定候補ではなく、OSにインストール済みのフォント一覧
+// (`list_installed_fonts`コマンド、SettingsView.svelte参照)から選ぶ。
+// 指定されたフォントが読み込めない/存在しない場合に備え、常にこの
+// フォールバックチェーンを末尾に付ける。
+const DEFAULT_FONT_FAMILY = 'Noto Sans JP'
+const FONT_FALLBACK_CHAIN = `'Noto Sans JP', system-ui, 'Segoe UI', Roboto, sans-serif`
 
-export const FONT_FAMILY_OPTIONS = [
-  { value: 'noto-sans', label: 'Noto Sans JP（既定）' },
-  { value: 'yu-gothic', label: '游ゴシック' },
-  { value: 'meiryo', label: 'メイリオ' },
-  { value: 'monospace', label: '等幅' },
-]
+function quoteFontName(name) {
+  return `'${String(name).replace(/'/g, "\\'")}'`
+}
 
 export const THEME_OPTIONS = [
   { value: 'light', label: 'ライト' },
@@ -52,6 +49,7 @@ export function applyAppearance(settings) {
   }
 
   root.style.setProperty('--accent', settings.accent_color || ACCENT_COLOR_OPTIONS[0].value)
-  root.style.setProperty('--font-sans', FONT_STACKS[settings.font_family] || FONT_STACKS['noto-sans'])
+  const fontName = settings.font_family || DEFAULT_FONT_FAMILY
+  root.style.setProperty('--font-sans', `${quoteFontName(fontName)}, ${FONT_FALLBACK_CHAIN}`)
   root.dataset.fontSize = settings.font_size || 'medium'
 }
