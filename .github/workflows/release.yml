@@ -1,0 +1,141 @@
+name: Release
+
+# mainへのpush毎にビルドするが、リリース(タグ付け・GitHub Release作成)は
+# ワークスペースのバージョン(ルートのCargo.tomlのworkspace.package.version)が
+# 前回リリース時から変わっている(=同名タグがまだorigin上に存在しない)場合のみ行う。
+# 単なるコミット追加ではリリースが増殖しないようにするための制御。
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.version.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version and whether to release
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "Tag v$VERSION already exists on origin; skipping release."
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "Will release v$VERSION."
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+          - os: ubuntu-latest
+            name: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri公式のLinux向け前提パッケージ + font-kit(Fontconfig)用のヘッダ。
+      # native-tlsはvendoredフィーチャでOpenSSLを自前ビルドするためlibssl-dev等は不要
+      # (代わりにCコンパイラ/perlが要るが、build-essentialに含まれる)。
+      - name: Install Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev build-essential curl wget file libfontconfig1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Cache tauri-cli binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-tauri-cli-v2
+
+      - name: Install tauri-cli
+        shell: bash
+        run: |
+          if ! command -v cargo-tauri >/dev/null 2>&1; then
+            cargo install tauri-cli --version "^2" --locked
+          fi
+
+      - name: Build CLI/TUI binaries
+        run: cargo build --release -p ferro-cli -p ferro-tui
+
+      - name: Build GUI installer bundles
+        run: cargo tauri build
+
+      - name: Package CLI/TUI binaries (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist release-assets
+          cp target/release/ferro.exe target/release/ferro-tui.exe dist/
+          (cd dist && 7z a "../release-assets/ferro-cli-tui-${{ matrix.name }}.zip" ferro.exe ferro-tui.exe)
+
+      - name: Package CLI/TUI binaries (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          mkdir -p dist release-assets
+          cp target/release/ferro target/release/ferro-tui dist/
+          tar -czf "release-assets/ferro-cli-tui-${{ matrix.name }}.tar.gz" -C dist ferro ferro-tui
+
+      - name: Collect GUI installer bundles
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find target/release/bundle -type f \
+            \( -name '*.msi' -o -name '*setup.exe' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) \
+            -exec cp {} release-assets/ \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.name }}
+          path: release-assets/*
+
+  release:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: Ferro v${{ needs.check-version.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: release-assets/*

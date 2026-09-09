@@ -81,6 +81,17 @@
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`
   （実測: MSI約7.7MB、NSIS約4.5MB。Electron系との比較で軽量という当初方針どおり）
+- **リリース自動化**（`.github/workflows/release.yml`）: `main`へのpush毎に起動するが、
+  実際にビルド・GitHub Releaseを作るのはルート`Cargo.toml`の`workspace.package.version`
+  に対応するタグ（`vX.Y.Z`）がまだ`origin`に存在しない場合のみ（`git ls-remote --tags origin`で
+  判定）。単なるコミットの積み重ねでリリースが増殖しないようにするための制御で、
+  バージョンを上げる操作自体がリリースのトリガーになる設計。Windows/Linuxの2ランナーで
+  `cargo build --release -p ferro-cli -p ferro-tui`（CLI/TUIバイナリ）と`cargo tauri build`
+  （GUIインストーラー: Windows MSI/NSIS、Linux deb/AppImage）の両方を行い、
+  CLI/TUIバイナリはzip（Windows）/tar.gz（Linux）にまとめて、インストーラー成果物と
+  一緒に同じGitHub Releaseへ添付する。初回リリースは0.0.1
+  （既存の0.1.0から意図的に下げた。「本格的なリリースの開始点」として0.0.1から
+  振り直したいというユーザーの意向による）。
 - 未着手/既知の課題: 下記のTantivy/Windows信頼性の既知の問題
 
 ## 要件
