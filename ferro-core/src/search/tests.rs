@@ -309,3 +309,30 @@ fn reopening_with_incompatible_schema_recreates_the_index() {
     index.commit().unwrap();
     assert_eq!(index.search("subject", 10).unwrap(), vec![1]);
 }
+
+/// 2つ目のプロセス（実際にはこのテスト内の2つ目の`SearchIndex`）が同じ
+/// ディレクトリを開こうとした場合の回帰テスト。生のTantivyエラー
+/// （"Could not acquire lock..."）のままだと、実際に別のFerroプロセス
+/// （CLI/TUI/GUI）が起動中なのか、以前のプロセスが異常終了して
+/// ロックファイルが残っているだけなのか区別できず対処のしようがない
+/// （実際にTUIをテスト中に強制終了させたことでこの状態を踏み、無関係な
+/// GUIが原因不明のパニックで起動できなくなった）。`WriterLockBusy`に
+/// 読み替えて、両方の可能性と対処法を案内するようにした。
+#[test]
+fn open_or_create_reports_an_actionable_error_when_already_locked() {
+    let dir = tempdir().unwrap();
+    let _first = SearchIndex::open_or_create(dir.path()).unwrap();
+
+    let err = match SearchIndex::open_or_create(dir.path()) {
+        Ok(_) => panic!("expected opening an already-locked index to fail"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, SearchError::WriterLockBusy { .. }),
+        "expected WriterLockBusy, got: {err:?}"
+    );
+    // パスと対処法（.lockファイルを削除しても安全）が案内に含まれること。
+    let message = err.to_string();
+    assert!(message.contains(&dir.path().display().to_string()));
+    assert!(message.contains(".lock"));
+}
