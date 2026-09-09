@@ -647,6 +647,20 @@ fn color_rules_config_path() -> String {
     paths::color_rules_config_path().display().to_string()
 }
 
+/// OSにインストールされているフォントのファミリー名一覧（重複除去・アルファベット順）。
+/// 設定画面の「フォント」プルダウンをこの一覧から選ばせるために使う
+/// （`ferro_core::db::settings::Settings::font_family`は固定候補ではなく任意の
+/// フォント名を受け付ける。存在しない名前が入っていてもフロント側の
+/// フォールバックチェーンで安全に無視されるだけなので、ここで検証はしない）。
+#[tauri::command]
+fn list_installed_fonts() -> Result<Vec<String>, String> {
+    use font_kit::source::SystemSource;
+    let mut families = SystemSource::new().all_families().map_err(|e| e.to_string())?;
+    families.sort();
+    families.dedup();
+    Ok(families)
+}
+
 /// アカウントを同期する。ネットワークI/Oを伴い数十秒〜数分（クラッシュ時の
 /// リトライを含めるとさらに長く）かかることがある。`#[tauri::command]`の
 /// 呼び出し元スレッドで直接この重い処理を行うと、実機でWindowsから
@@ -1030,7 +1044,8 @@ pub fn run() {
             get_color_rules,
             add_color_rule,
             remove_color_rule,
-            color_rules_config_path
+            color_rules_config_path,
+            list_installed_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Ferro desktop app");

@@ -22,7 +22,12 @@ pub struct Settings {
     /// hoverや薄い背景色はフロント側でCSSの`color-mix()`により動的に導出するため、
     /// ここではベースの1色だけを保持する。
     pub accent_color: String,
-    /// "noto-sans" | "yu-gothic" | "meiryo" | "monospace"。
+    /// フォントファミリー名（例: "Noto Sans JP"、"Yu Gothic"）。GUIの設定画面が
+    /// OSにインストール済みのフォント一覧（`list_installed_fonts`コマンド、
+    /// `font-kit`crate）から選ばせるため、固定の候補リストではなく任意の文字列。
+    /// 存在しない/入力ミスのフォント名が入っていても、フロント側が常に
+    /// フォールバック（`'指定名', 'Noto Sans JP', system-ui, sans-serif`）を
+    /// 付けて適用するので、CSSが無効になったりクラッシュしたりはしない。
     pub font_family: String,
     /// "small" | "medium" | "large"。
     pub font_size: String,
@@ -37,7 +42,7 @@ impl Default for Settings {
             sync_interval_minutes: 5,
             theme: "light".to_string(),
             accent_color: "#3f6b5c".to_string(),
-            font_family: "noto-sans".to_string(),
+            font_family: "Noto Sans JP".to_string(),
             font_size: "medium".to_string(),
         }
     }
@@ -53,16 +58,6 @@ const KEY_FONT_FAMILY: &str = "font_family";
 const KEY_FONT_SIZE: &str = "font_size";
 
 const VALID_THEMES: [&str; 3] = ["light", "dark", "system"];
-const VALID_FONT_FAMILIES: [&str; 8] = [
-    "noto-sans",
-    "noto-serif",
-    "yu-gothic",
-    "yu-mincho",
-    "meiryo",
-    "biz-ud-gothic",
-    "m-plus-1p",
-    "monospace",
-];
 const VALID_FONT_SIZES: [&str; 3] = ["small", "medium", "large"];
 
 pub fn get(conn: &Connection) -> rusqlite::Result<Settings> {
@@ -99,7 +94,9 @@ pub fn get(conn: &Connection) -> rusqlite::Result<Settings> {
                 }
             }
             KEY_FONT_FAMILY => {
-                if VALID_FONT_FAMILIES.contains(&value.as_str()) {
+                // インストール済みフォントの一覧から選ばせるため固定候補は無い
+                // （`accent_color`と同じ理由で空文字だけ弾く）。
+                if !value.is_empty() {
                     settings.font_family = value;
                 }
             }
@@ -188,15 +185,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_theme_and_font_values_fall_back_to_defaults() {
+    fn invalid_theme_and_font_size_fall_back_to_defaults() {
         let conn = open_in_memory().unwrap();
         conn.execute(
             "INSERT INTO settings (key, value) VALUES ('theme', 'not-a-theme')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('font_family', 'comic-sans')",
             [],
         )
         .unwrap();
@@ -207,11 +199,26 @@ mod tests {
         .unwrap();
         conn.execute("INSERT INTO settings (key, value) VALUES ('accent_color', '')", [])
             .unwrap();
+        conn.execute("INSERT INTO settings (key, value) VALUES ('font_family', '')", [])
+            .unwrap();
 
         let settings = get(&conn).unwrap();
         assert_eq!(settings.theme, Settings::default().theme);
-        assert_eq!(settings.font_family, Settings::default().font_family);
         assert_eq!(settings.font_size, Settings::default().font_size);
         assert_eq!(settings.accent_color, Settings::default().accent_color);
+        assert_eq!(settings.font_family, Settings::default().font_family);
+    }
+
+    /// `font_family`は固定候補ではなく、OSにインストールされている任意の
+    /// フォント名を受け付ける（`list_installed_fonts`コマンド参照）。
+    #[test]
+    fn arbitrary_font_family_name_is_accepted() {
+        let conn = open_in_memory().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('font_family', 'Comic Sans MS')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(get(&conn).unwrap().font_family, "Comic Sans MS");
     }
 }

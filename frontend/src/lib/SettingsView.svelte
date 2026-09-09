@@ -5,13 +5,7 @@
   import { invoke } from '@tauri-apps/api/core'
   import AccountsView from './AccountsView.svelte'
   import ColorRulesView from './ColorRulesView.svelte'
-  import {
-    applyAppearance,
-    THEME_OPTIONS,
-    ACCENT_COLOR_OPTIONS,
-    FONT_FAMILY_OPTIONS,
-    FONT_SIZE_OPTIONS,
-  } from './appearance.js'
+  import { applyAppearance, THEME_OPTIONS, ACCENT_COLOR_OPTIONS, FONT_SIZE_OPTIONS } from './appearance.js'
 
   let {
     onBack = () => {},
@@ -35,6 +29,12 @@
   let error = $state('')
   let saving = $state(false)
 
+  // OSにインストールされているフォントの一覧（フォント選択プルダウン用）。
+  // 一覧取得自体は失敗しても致命的ではない（空のままなら、現在保存されている
+  // フォント名だけがプルダウンに出る。下の`fontFamilyOptions`参照）ので、
+  // ここではエラーメッセージを出さずに黙って諦める。
+  let installedFonts = $state([])
+
   async function load() {
     try {
       settings = await invoke('get_settings')
@@ -42,8 +42,22 @@
     } catch (e) {
       error = String(e)
     }
+    try {
+      installedFonts = await invoke('list_installed_fonts')
+    } catch {
+      installedFonts = []
+    }
   }
   load()
+
+  // 現在保存されているフォント名がインストール済み一覧に無い場合でも
+  // （手編集・別環境からの引き継ぎ・一覧取得失敗など）、選択肢から消えて
+  // 「何も選ばれていないように見える」ことが無いよう先頭に足しておく。
+  let fontFamilyOptions = $derived(
+    settings && settings.font_family && !installedFonts.includes(settings.font_family)
+      ? [settings.font_family, ...installedFonts]
+      : installedFonts,
+  )
 
   async function toggle(key) {
     if (!settings || saving) return
@@ -191,15 +205,15 @@
       <div class="row">
         <div class="text">
           <div class="title">フォント</div>
-          <div class="desc">一覧・本文表示に使うフォントです。</div>
+          <div class="desc">一覧・本文表示に使うフォントです（PCにインストールされているフォントから選べます）。</div>
         </div>
         <select
-          class="interval-select"
+          class="interval-select font-select"
           value={settings.font_family}
           onchange={(e) => updateAppearance('font_family', e.target.value)}
         >
-          {#each FONT_FAMILY_OPTIONS as opt (opt.value)}
-            <option value={opt.value}>{opt.label}</option>
+          {#each fontFamilyOptions as name (name)}
+            <option value={name}>{name}</option>
           {/each}
         </select>
       </div>
@@ -329,6 +343,9 @@
     font-size: 13px;
     background: var(--surface);
     color: var(--text);
+  }
+  .font-select {
+    max-width: 220px;
   }
   .swatch-picker {
     display: flex;
