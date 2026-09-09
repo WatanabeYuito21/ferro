@@ -150,9 +150,19 @@ cargo tauri build
 
 MSIは英語(`Ferro_x.y.z_x64_en-US.msi`)と日本語(`Ferro_x.y.z_x64_ja-JP.msi`)の2つが生成されます（WiXは言語ごとに別ファイルになる仕様）。NSIS(`setup.exe`)は1つのファイルに両言語が入っており、インストール開始時に言語選択ダイアログが出ます。
 
-## アカウント設定ファイル
+## 設定ファイル
 
-アカウント設定（パスワードを除く）はアプリデータディレクトリ直下の`accounts.toml`で管理します（正の情報源）。直接編集して、CLI/GUIの起動時か `ferro account reload-config` / GUIの「Reload config」ボタンで反映できます。
+Ferroの設定はすべてTOMLファイルとしてアプリデータディレクトリ直下に保存されます（正の情報源。DBは補助的なキャッシュに過ぎません）。CLI/GUI/TUIから編集した内容もこれらのファイルに反映されるので、直接編集してもGUIから変更しても同じように扱われます。
+
+保存場所は環境ごとに以下のようになります。
+
+- Windows: `%APPDATA%\ferro\`
+- Linux: `~/.local/share/ferro/`
+- macOS: `~/Library/Application Support/ferro/`
+
+### `accounts.toml`（アカウント設定）
+
+パスワードを除くアカウント設定を保持します。直接編集して、CLI/GUIの起動時か `ferro account reload-config` / GUIの「Reload config」ボタンで反映できます。
 
 ```toml
 [[account]]
@@ -165,13 +175,37 @@ use_tls = true
 
 ファイルから削除したエントリのメッセージは自動では消えません（削除は`ferro account remove`で明示的に行います）。パスワードはこのファイルには含まれず、OSの資格情報マネージャー（Windows資格情報マネージャー / secret-service等）に保存されます。
 
-保存場所は環境ごとに以下のようになります。
+### `color_rules.toml`（色分けルール）
 
-- Windows: `%APPDATA%\ferro\`
-- Linux: `~/.local/share/ferro/`
-- macOS: `~/Library/Application Support/ferro/`
+特定の文字列を含むメッセージの一覧表示を色分けするルールです。GUIの設定画面から追加/削除できるほか、直接編集して反映することもできます。
 
-同期エラー（サーバーとの接続が切れた場合など）は上記フォルダ内の`ferro.log`に記録されます。GUIでは設定画面の「診断」セクションから開けます。不具合を報告する際はこのファイルの内容を添えてもらえると助かります（パスワード等は記録されません）。
+```toml
+[[rule]]
+pattern = "critical"
+color = "#b00020"
+```
+
+### `settings.toml`（表示・動作設定）
+
+一覧のプレビュー行/差出人アイコン表示、既読にするまでの遅延、バックグラウンド自動同期の間隔、外観（テーマ/アクセントカラー/フォント/文字サイズ）、メールの保持日数を保持します。GUI/TUIの設定画面から変更するのが基本ですが、直接編集して反映することもできます。
+
+```toml
+show_preview_line = true
+show_sender_avatar = false
+mark_read_delay = true
+sync_interval_minutes = 5
+theme = "light"
+accent_color = "#3f6b5c"
+font_family = "Noto Sans JP"
+font_size = "medium"
+retention_days = 0
+```
+
+v0.0.6より前はSQLiteのDBに保存していましたが、他の設定ファイルと一貫させるためファイルベースに移行しました。既存ユーザーの設定は初回起動時に自動でこのファイルへ引き継がれます。
+
+### 診断ログ
+
+同期エラー（サーバーとの接続が切れた場合など）は`ferro.log`に記録されます。GUIでは設定画面の「診断」セクションから開けます。不具合を報告する際はこのファイルの内容を添えてもらえると助かります（パスワード等は記録されません）。
 
 ## 開発
 

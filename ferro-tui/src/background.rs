@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ferro_core::db::{self, Connection};
 use ferro_core::search::SearchIndex;
 use ferro_core::sync::SyncSummary;
-use ferro_core::{credentials, paths, reindex, sync};
+use ferro_core::{credentials, paths, reindex, settings, sync};
 
 /// バックグラウンドスレッドからメインループへの通知。
 pub enum BackgroundEvent {
@@ -57,7 +57,7 @@ pub fn spawn(write_conn: Arc<Mutex<Connection>>, search_index: Arc<SearchIndex>,
             .unwrap_or_else(Instant::now);
 
         loop {
-            let interval = current_sync_interval(&write_conn);
+            let interval = current_sync_interval();
             std::thread::sleep(interval);
 
             sync_all_accounts_once(&write_conn, &search_index, &tx);
@@ -71,14 +71,9 @@ pub fn spawn(write_conn: Arc<Mutex<Connection>>, search_index: Arc<SearchIndex>,
     });
 }
 
-fn current_sync_interval(write_conn: &Arc<Mutex<Connection>>) -> Duration {
-    let minutes = write_conn
-        .lock()
-        .ok()
-        .and_then(|conn| db::settings::get(&conn).ok())
-        .map(|s| s.sync_interval_minutes)
-        .filter(|m| *m > 0)
-        .unwrap_or(5);
+fn current_sync_interval() -> Duration {
+    let minutes = settings::load_or_default(&paths::settings_config_path()).sync_interval_minutes;
+    let minutes = if minutes > 0 { minutes } else { 5 };
     Duration::from_secs(minutes as u64 * 60)
 }
 
@@ -169,13 +164,7 @@ fn run_retention_cleanup_once(
     search_index: &Arc<SearchIndex>,
     tx: &Sender<BackgroundEvent>,
 ) {
-    let retention_days = {
-        let Ok(conn) = write_conn.lock() else { return };
-        match db::settings::get(&conn) {
-            Ok(settings) => settings.retention_days,
-            Err(_) => return,
-        }
-    };
+    let retention_days = settings::load_or_default(&paths::settings_config_path()).retention_days;
     if retention_days <= 0 {
         return;
     }
@@ -209,10 +198,7 @@ fn run_retention_cleanup_once(
 /// 保持日数が切れたメッセージを即座に削除する（設定画面の「今すぐ整理する」用）。
 /// バックグラウンドスレッドとは独立して、メインスレッドから直接呼べるようにする。
 pub fn purge_expired_now(write_conn: &Arc<Mutex<Connection>>, search_index: &Arc<SearchIndex>) -> Result<usize, String> {
-    let retention_days = {
-        let conn = write_conn.lock().map_err(|e| e.to_string())?;
-        db::settings::get(&conn).map_err(|e| e.to_string())?.retention_days
-    };
+    let retention_days = settings::load_or_default(&paths::settings_config_path()).retention_days;
     if retention_days <= 0 {
         return Ok(0);
     }

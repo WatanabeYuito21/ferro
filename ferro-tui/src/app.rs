@@ -8,11 +8,11 @@ use ferro_core::color_rules::ColorRule;
 use ferro_core::db::accounts::Account;
 use ferro_core::db::labels::LabelWithCount;
 use ferro_core::db::messages::{self, Folder, FolderCounts, Message};
-use ferro_core::db::settings::Settings;
 use ferro_core::db::Connection;
 use ferro_core::mail::attachments::AttachmentInfo;
 use ferro_core::search::SearchIndex;
-use ferro_core::{color_rules, db, mail, maildir, message_actions, paths};
+use ferro_core::settings::Settings;
+use ferro_core::{color_rules, mail, maildir, message_actions, paths, settings};
 use tui_input::Input;
 
 use crate::background::{self, BackgroundEvent};
@@ -156,9 +156,9 @@ impl App {
         let conn = self.read_conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         self.folder_counts = messages::folder_counts(&conn, None, Self::now_unix())?;
         self.labels = ferro_core::db::labels::list_with_counts(&conn)?;
-        self.settings = db::settings::get(&conn)?;
         self.accounts = ferro_core::db::accounts::list(&conn)?;
         drop(conn);
+        self.settings = settings::load(&paths::settings_config_path())?;
         self.color_rules = color_rules::load(&paths::color_rules_config_path())?.rules;
         Ok(())
     }

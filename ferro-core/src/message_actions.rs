@@ -37,7 +37,7 @@ pub fn set_deleted(
     Ok(())
 }
 
-/// メール保持期間（`db::settings::Settings::retention_days`）が切れたメッセージを
+/// メール保持期間（`settings::Settings::retention_days`）が切れたメッセージを
 /// 1バッチ分（最大`limit`件、`date_header`が古い順）完全に削除する。
 /// `set_deleted`の論理削除と違い、DB行・Maildirファイル・検索インデックスの
 /// 全てから消す（ディスクを実際に回収するため）。スター付きは対象外
