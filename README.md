@@ -171,6 +171,8 @@ use_tls = true
 - Linux: `~/.local/share/ferro/`
 - macOS: `~/Library/Application Support/ferro/`
 
+同期エラー（サーバーとの接続が切れた場合など）は上記フォルダ内の`ferro.log`に記録されます。GUIでは設定画面の「診断」セクションから開けます。不具合を報告する際はこのファイルの内容を添えてもらえると助かります（パスワード等は記録されません）。
+
 ## 開発
 
 ```sh

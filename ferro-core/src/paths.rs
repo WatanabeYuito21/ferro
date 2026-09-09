@@ -36,3 +36,8 @@ pub fn accounts_config_path() -> PathBuf {
 pub fn color_rules_config_path() -> PathBuf {
     app_data_dir().join("color_rules.toml")
 }
+
+/// 診断用ログファイル。`logging::log_line`が追記する（`logging`モジュール参照）。
+pub fn log_path() -> PathBuf {
+    app_data_dir().join("ferro.log")
+}
