@@ -53,7 +53,16 @@ const KEY_FONT_FAMILY: &str = "font_family";
 const KEY_FONT_SIZE: &str = "font_size";
 
 const VALID_THEMES: [&str; 3] = ["light", "dark", "system"];
-const VALID_FONT_FAMILIES: [&str; 4] = ["noto-sans", "yu-gothic", "meiryo", "monospace"];
+const VALID_FONT_FAMILIES: [&str; 8] = [
+    "noto-sans",
+    "noto-serif",
+    "yu-gothic",
+    "yu-mincho",
+    "meiryo",
+    "biz-ud-gothic",
+    "m-plus-1p",
+    "monospace",
+];
 const VALID_FONT_SIZES: [&str; 3] = ["small", "medium", "large"];
 
 pub fn get(conn: &Connection) -> rusqlite::Result<Settings> {
