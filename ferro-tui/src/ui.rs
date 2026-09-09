@@ -246,6 +246,11 @@ fn render_settings_screen(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .title("設定（R:検索インデックス再構築 P:今すぐ整理する Esc:戻る。数値/ルール編集は今後対応予定）");
     let mut lines = vec![
+        Line::styled(
+            format!("Ferro v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Line::from(""),
         Line::styled("表示", Style::default().add_modifier(Modifier::BOLD)),
         Line::from(format!(
             "  一覧のプレビュー行: {}",

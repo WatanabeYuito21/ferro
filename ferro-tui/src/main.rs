@@ -29,6 +29,13 @@ use app::App;
 const TICK_INTERVAL: Duration = Duration::from_millis(250);
 
 fn main() -> anyhow::Result<()> {
+    // `--version`/`-V`だけの簡易対応。clapを新たに依存に足すほどではないため
+    // 素朴に引数を見る（`ferro-cli`の`--version`と同じ流儀を揃えるため）。
+    if std::env::args().nth(1).as_deref().is_some_and(|a| a == "--version" || a == "-V") {
+        println!("ferro-tui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     std::fs::create_dir_all(paths::app_data_dir())?;
     let write_conn = db::open(&paths::db_path())?;
     let read_conn = db::open(&paths::db_path())?;

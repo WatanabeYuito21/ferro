@@ -25,6 +25,7 @@
     onRemoveColorRule = async () => {},
     onReloadColorRules = async () => {},
     logFilePath = '',
+    appVersion = '',
   } = $props()
 
   let settings = $state(null)
@@ -192,7 +193,7 @@
 
 <div class="settings-view">
   <button type="button" class="back" onclick={onBack}>← メッセージへ戻る</button>
-  <h2>設定</h2>
+  <h2>設定{#if appVersion}<span class="version">v{appVersion}</span>{/if}</h2>
   <p class="lead">アカウント・表示・同期・検索の動作を調整します。</p>
 
   {#if error}
@@ -470,6 +471,12 @@
     font-size: 13px;
     color: var(--text-muted);
     margin-bottom: 1.5rem;
+  }
+  .version {
+    margin-left: 0.5rem;
+    font-size: 13px;
+    font-weight: normal;
+    color: var(--text-muted);
   }
   .rows {
     display: flex;
