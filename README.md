@@ -1,5 +1,8 @@
 # Ferro
 
+[![Release](https://github.com/WatanabeYuito21/ferro/actions/workflows/release.yml/badge.svg)](https://github.com/WatanabeYuito21/ferro/actions/workflows/release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/WatanabeYuito21/ferro)](https://github.com/WatanabeYuito21/ferro/releases/latest)
+
 1000万件規模のメールでも軽快に動く、POP3受信専用のメーラーです。Rust + Tauri + Svelteで書かれており、CLI・TUI・GUIのいずれからでも使えます。
 
 ## なぜ作ったか
@@ -185,10 +188,12 @@ ferro bench 10000000
 GitHub Actions（`.github/workflows/release.yml`）が同じバージョンのタグ（`vX.Y.Z`）がまだ
 `origin`に無いことを確認した上で、Windows/Linux向けにビルドしてGitHub Releaseへ以下を配置します。
 
-- GUIインストーラー（Windows: MSI/NSIS、Linux: deb/AppImage）
+- GUIインストーラー（Windows: MSI/NSIS、Linux: deb/AppImage/rpm）
 - CLI（`ferro`）・TUI（`ferro-tui`）バイナリをまとめたアーカイブ（Windows: zip、Linux: tar.gz）
 
 バージョンを上げていないpushではリリースは作られません（同じタグの重複作成を防ぐため）。
+
+最新版は[Releasesページ](https://github.com/WatanabeYuito21/ferro/releases/latest)からダウンロードできます。`v0.0.1`が最初のリリースです。
 
 ## 既知の制限
 
