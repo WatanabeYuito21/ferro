@@ -80,7 +80,15 @@
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`
-  （実測: MSI約7.7MB、NSIS約4.5MB。Electron系との比較で軽量という当初方針どおり）
+  （実測: MSI約7.7MB、NSIS約4.5MB。Electron系との比較で軽量という当初方針どおり）。
+  インストーラーの言語は`tauri.conf.json`の`bundle.windows.wix.language`
+  （`["en-US", "ja-JP"]`）と`bundle.windows.nsis.languages`
+  （`["English", "Japanese"]`、`displayLanguageSelector: true`）で指定している。
+  WiX(MSI)は言語ごとに別ファイルが生成される仕様のため`Ferro_x.y.z_x64_en-US.msi`/
+  `Ferro_x.y.z_x64_ja-JP.msi`の2つに分かれるが、NSIS(setup.exe)は1ファイルの中に
+  両言語を持ち、インストール開始時に選択ダイアログを出す方式。両方とも
+  Tauri/WiX/NSISが標準で持つ言語データを使うだけで、追加の.wxl/.nshファイルは
+  用意していない。
 - **リリース自動化**（`.github/workflows/release.yml`）: `main`へのpush毎に起動するが、
   実際にビルド・GitHub Releaseを作るのはルート`Cargo.toml`の`workspace.package.version`
   に対応するタグ（`vX.Y.Z`）がまだ`origin`に存在しない場合のみ（`git ls-remote --tags origin`で
