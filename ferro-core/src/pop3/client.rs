@@ -1,10 +1,28 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::time::Duration;
 
 use native_tls::TlsConnector;
 
 use super::error::{Pop3Error, Result};
 use super::stream::Pop3Stream;
+
+/// ソケットの読み書きタイムアウト。以前は無制限（`TcpStream`にタイムアウトを
+/// 設定していなかった）だったため、サーバーがTCP接続は受け付けたまま応答を
+/// 返さなくなる（レート制限・輻輳・単純なハング等）と`read`が永久にブロックし、
+/// そのまま`write_conn`を握り続けてバックグラウンド同期・検索インデックスの
+/// キャッチアップ・GUIの他の操作まで巻き込んで止まったまま二度と直らない、
+/// という実害を実際に踏んだ（"syncing…"のまま件数が進まず、新着も一切
+/// 増えなくなった）。タイムアウトで`io::Error`を返せば`Pop3Error::Io`経由で
+/// `sync::is_disconnect`が再接続対象と判定し、既存の再接続ロジックに乗る。
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn apply_socket_timeouts(tcp: &TcpStream) -> Result<()> {
+    tcp.set_read_timeout(Some(READ_TIMEOUT))?;
+    tcp.set_write_timeout(Some(WRITE_TIMEOUT))?;
+    Ok(())
+}
 
 /// POP3サーバーとの接続。CLAUDE.mdの方針どおり、
 /// `use_tls`とポート番号に基づいて呼び出し側が接続方式を決める。
@@ -43,6 +61,7 @@ impl Pop3Client {
     /// 完全平文でTCP接続する。挨拶(greeting)行を読み切ってから返す。
     pub fn connect_plain(host: &str, port: u16) -> Result<Pop3Client> {
         let tcp = TcpStream::connect((host, port))?;
+        apply_socket_timeouts(&tcp)?;
         let mut client = Pop3Client {
             reader: BufReader::new(Pop3Stream::Plain(tcp)),
         };
@@ -53,6 +72,7 @@ impl Pop3Client {
     /// 暗黙的TLS(POP3S、通常ポート995)で接続する。
     pub fn connect_implicit_tls(host: &str, port: u16) -> Result<Pop3Client> {
         let tcp = TcpStream::connect((host, port))?;
+        apply_socket_timeouts(&tcp)?;
         let connector = TlsConnector::new()?;
         let tls = connector.connect(host, tcp)?;
         let mut client = Pop3Client {
