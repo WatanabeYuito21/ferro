@@ -1,5 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use tempfile::tempdir;
@@ -358,4 +360,156 @@ fn sync_gives_up_after_exhausting_reconnects_during_initial_handshake() {
         result,
         Err(SyncError::Pop3(Pop3Error::ConnectionClosed))
     ));
+}
+
+/// UIDL非対応（送ると接続を切断する）サーバーを模倣する。実際にレンタルサーバー
+/// 宛のアカウントで踏んだ挙動の再現: CONNECT/USER/PASSには正常に応答するが、
+/// UIDLの直後だけ応答せず切断する。1回目の接続でのみ発動し、以降の接続
+/// （フォールバック後）ではLIST/RETRに正常応答する。`uidl_call_count`で
+/// UIDLが呼ばれた回数を記録する（2回目以降の同期呼び出しでフォールバック判定が
+/// 効いて二度とUIDLを試さないことを確認するため）。
+fn spawn_uidl_unsupported_server(
+    messages: Vec<FakeMessage>,
+    uidl_call_count: Arc<AtomicUsize>,
+) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    thread::spawn(move || {
+        // 1回目: UIDLで切断（非対応の再現）。2回目: その直後のフォールバック
+        // 再接続でLIST/RETR。3回目: テストの2度目のsync_account_with_limit呼び出し
+        // （uidl_supported=false がDBに残っているはずなので、最初からLIST/RETR）。
+        for (i, stream) in listener.incoming().take(3).enumerate() {
+            let mut stream = stream.unwrap();
+            stream.write_all(b"+OK fake pop3 ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 {
+                    break;
+                }
+                let line = line.trim_end();
+
+                if line.starts_with("USER") || line.starts_with("PASS") {
+                    stream.write_all(b"+OK\r\n").unwrap();
+                } else if line == "UIDL" {
+                    uidl_call_count.fetch_add(1, Ordering::SeqCst);
+                    if i == 0 {
+                        break; // 応答せず切断する（UIDL非対応の再現）
+                    }
+                    // フォールバック判定後の接続でUIDLが呼ばれるのはバグなので、
+                    // テストが検出できるよう明示的に-ERRを返す。
+                    stream.write_all(b"-ERR should not be called again\r\n").unwrap();
+                } else if line == "LIST" {
+                    let mut resp = String::from("+OK\r\n");
+                    for (idx, m) in messages.iter().enumerate() {
+                        resp.push_str(&format!("{} {}\r\n", idx + 1, m.raw.len()));
+                    }
+                    resp.push_str(".\r\n");
+                    stream.write_all(resp.as_bytes()).unwrap();
+                } else if let Some(rest) = line.strip_prefix("RETR ") {
+                    let num: u32 = rest.trim().parse().unwrap();
+                    let body = messages[(num - 1) as usize].raw;
+                    stream
+                        .write_all(format!("+OK {} octets\r\n", body.len()).as_bytes())
+                        .unwrap();
+                    stream.write_all(body).unwrap();
+                    stream.write_all(b"\r\n.\r\n").unwrap();
+                } else if line == "QUIT" {
+                    stream.write_all(b"+OK bye\r\n").unwrap();
+                    break;
+                } else {
+                    stream.write_all(b"-ERR unknown command\r\n").unwrap();
+                }
+            }
+        }
+    });
+
+    port
+}
+
+#[test]
+fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+
+    let fake_messages = vec![
+        FakeMessage {
+            uidl: "unused-1",
+            raw: b"Subject: one\r\n\r\nbody1",
+        },
+        FakeMessage {
+            uidl: "unused-2",
+            raw: b"Subject: two\r\n\r\nbody2",
+        },
+    ];
+    let uidl_call_count = Arc::new(AtomicUsize::new(0));
+    let port = spawn_uidl_unsupported_server(fake_messages, uidl_call_count.clone());
+    let account = make_account(&conn, port);
+    assert_eq!(account.uidl_supported, None);
+
+    let summary = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary,
+        SyncSummary {
+            fetched: 2,
+            remaining: 0,
+            ended_early: false
+        }
+    );
+    assert_eq!(
+        uidl_call_count.load(Ordering::SeqCst),
+        1,
+        "UIDL should be tried exactly once before falling back"
+    );
+
+    let updated_account = accounts::get(&conn, account.id).unwrap().unwrap();
+    assert_eq!(updated_account.uidl_supported, Some(false));
+
+    let stored = messages::list_recent(&conn, Some(account.id), None, 10).unwrap();
+    assert_eq!(stored.len(), 2);
+    // フォールバック経路のuidlは内容ハッシュなので、サーバー側の(未使用の)uidlとは
+    // 別物になる。
+    assert!(stored.iter().all(|m| m.uidl.starts_with("ferro-hash-v1-")));
+
+    // 2回目のsync呼び出し（DBに記録された uidl_supported=Some(false) を読み込んだ
+    // 新しいAccount）では、UIDLは一切呼ばれず、内容ハッシュが一致するので
+    // 新着扱いにもならないはず。
+    let summary2 = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &updated_account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(
+        summary2,
+        SyncSummary {
+            fetched: 0,
+            remaining: 0,
+            ended_early: false
+        }
+    );
+    assert_eq!(
+        uidl_call_count.load(Ordering::SeqCst),
+        1,
+        "second sync must not try UIDL again"
+    );
 }

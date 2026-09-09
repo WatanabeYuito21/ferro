@@ -8,7 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-mod hash;
+pub(crate) mod hash;
 use hash::fnv1a64;
 
 /// 指定メッセージの保存先パスを計算する（ファイルの存在有無に関わらず決定的）。

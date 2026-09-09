@@ -82,7 +82,29 @@
   出しておらずCONNECT/USER/PASS/UIDLのどこで切れているかまでは分からなかった
   ため、`try_or_reconnect!`マクロに段階名（`"CONNECT"`/`"USER"`/`"PASS"`/`"UIDL"`）
   を渡すよう変更し、どのPOP3コマンドの直後に切断されたかがログから直接
-  分かるようにした。
+  分かるようにした。この段階別ログにより、そのアカウントは**UIDLコマンドの
+  直後だけ**必ず切断されることが判明した（CONNECT/USER/PASSは毎回成功）。
+  UIDLはPOP3の必須コマンドではなく、対応していないサーバーが実在する
+  （本来`-ERR`を返すべきところを、このサーバーは接続切断で非対応を表現して
+  いるとみられる）。
+- **UIDL非対応サーバーへのフォールバック**（`Account::uidl_supported`/
+  `ferro_core::sync`）: Ferroの同期は「UIDL差分方式」（`messages.uidl`を
+  キーに前回との差分を取る）を設計の根幹に置いているため、UIDL非対応
+  サーバーには本来同期できない。`accounts.uidl_supported`（`NULL`=未判定/
+  `1`=対応/`0`=非対応。マイグレーション0006）を追加し、`sync_account_with_limit`が
+  UIDLを送って接続切断（`is_disconnect`）を検出したら`0`を記録、以後
+  そのアカウントでは二度とUIDLを試さず、`LIST`＋`RETR`した内容のFNV-1a
+  ハッシュ（`content_uidl`、`"ferro-hash-v1-"`接頭辞）を代替uidlとして使う
+  `fetch_and_store_by_hash`経路に切り替える。この経路は`messages::insert_new`の
+  `INSERT OR IGNORE`（`account_id`+`uidl`のユニーク制約）に頼って重複排除する
+  ため、UIDLで事前に絞り込めない代わりに**同期のたびに毎回全件RETRし直す**
+  （通信量は増えるが、実装がシンプルで済む。UIDL非対応サーバーは小規模な
+  アラート用メールボックス等での利用を想定しており実用上許容できると判断）。
+  `SyncSummary::fetched`（新規保存できた件数）と`remaining`（未処理件数）の
+  意味を保つため、`fetch_and_store_by_hash`は「新規保存できた件数」と
+  「RETRを試みた件数」を別々に返す（既知の内容を再RETRした場合は前者に
+  数えない）。UIDL対応判定はDBに永続化されるため、アプリを再起動しても
+  次回以降は最初からフォールバック経路に入る（再判定はしない）。
 - `ferro-tui`: `ratatui`+`crossterm`によるTUI版（neomutt的な使い方を想定。
   CLAUDE.md冒頭の「既存のneomutt」への言及どおり）。GUIと同じ`ferro-core`を
   土台にし、同じDB/Maildir/検索インデックス/`accounts.toml`/`color_rules.toml`を
