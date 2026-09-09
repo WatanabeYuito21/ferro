@@ -179,6 +179,17 @@ ferro bench 10000000
 
 開発の背景・設計判断・既知の問題などは[CLAUDE.md](./CLAUDE.md)により詳しくまとまっています。
 
+## リリース
+
+ルートの`Cargo.toml`の`workspace.package.version`（バージョンの正）を上げて`main`にpushすると、
+GitHub Actions（`.github/workflows/release.yml`）が同じバージョンのタグ（`vX.Y.Z`）がまだ
+`origin`に無いことを確認した上で、Windows/Linux向けにビルドしてGitHub Releaseへ以下を配置します。
+
+- GUIインストーラー（Windows: MSI/NSIS、Linux: deb/AppImage）
+- CLI（`ferro`）・TUI（`ferro-tui`）バイナリをまとめたアーカイブ（Windows: zip、Linux: tar.gz）
+
+バージョンを上げていないpushではリリースは作られません（同じタグの重複作成を防ぐため）。
+
 ## 既知の制限
 
 - Tantivyの`IndexWriter`がWindows環境で断続的に落ちることがある未解決の問題があります（詳細は[CLAUDE.md](./CLAUDE.md)参照）。自動リトライで大半は吸収されますが、完全な解決には至っていません。
