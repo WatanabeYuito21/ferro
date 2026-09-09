@@ -148,6 +148,8 @@ cargo run -p ferro-desktop
 cargo tauri build
 ```
 
+MSIは英語(`Ferro_x.y.z_x64_en-US.msi`)と日本語(`Ferro_x.y.z_x64_ja-JP.msi`)の2つが生成されます（WiXは言語ごとに別ファイルになる仕様）。NSIS(`setup.exe`)は1つのファイルに両言語が入っており、インストール開始時に言語選択ダイアログが出ます。
+
 ## アカウント設定ファイル
 
 アカウント設定（パスワードを除く）はアプリデータディレクトリ直下の`accounts.toml`で管理します（正の情報源）。直接編集して、CLI/GUIの起動時か `ferro account reload-config` / GUIの「Reload config」ボタンで反映できます。
