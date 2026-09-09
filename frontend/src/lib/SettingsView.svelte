@@ -3,6 +3,7 @@
   // モックアップにあった「画像を自動で読み込む」（本文はプレーンテキストのみ表示する
   // 設計のため対象が無い）「送信の取り消し」（送信機能自体が無い）は実装しない。
   import { invoke } from '@tauri-apps/api/core'
+  import { openPath } from '@tauri-apps/plugin-opener'
   import AccountsView from './AccountsView.svelte'
   import ColorRulesView from './ColorRulesView.svelte'
   import { applyAppearance, THEME_OPTIONS, ACCENT_COLOR_OPTIONS, FONT_SIZE_OPTIONS } from './appearance.js'
@@ -23,11 +24,23 @@
     onAddColorRule = async () => {},
     onRemoveColorRule = async () => {},
     onReloadColorRules = async () => {},
+    logFilePath = '',
   } = $props()
 
   let settings = $state(null)
   let error = $state('')
   let saving = $state(false)
+  let openLogError = $state('')
+
+  async function openLogFile() {
+    openLogError = ''
+    try {
+      // 同期エラー等を追記している診断ログをOSのデフォルトアプリ（メモ帳等）で開く。
+      await openPath(logFilePath)
+    } catch (e) {
+      openLogError = String(e)
+    }
+  }
 
   // OSにインストールされているフォントの一覧（フォント選択プルダウン用）。
   // 一覧取得自体は失敗しても致命的ではない（空のままなら、現在保存されている
@@ -367,6 +380,25 @@
       </div>
       {#if purgeStatus}
         <p class="reindex-status">{purgeStatus}</p>
+      {/if}
+    </div>
+
+    <h2 class="section-title">診断</h2>
+    <div class="rows">
+      <div class="row">
+        <div class="text">
+          <div class="title">ログファイル</div>
+          <div class="desc">
+            同期エラー（サーバーとの接続が切れた場合など）を記録したログファイルです。
+            不具合を報告する際はこのファイルの内容を添えてもらえると原因の特定に役立ちます。
+          </div>
+        </div>
+        <button type="button" class="action-button" onclick={openLogFile}>
+          ログファイルを開く
+        </button>
+      </div>
+      {#if openLogError}
+        <p class="reindex-status"><span class="error">{openLogError}</span></p>
       {/if}
     </div>
 

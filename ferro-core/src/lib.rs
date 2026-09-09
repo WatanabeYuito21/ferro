@@ -6,6 +6,7 @@ pub mod account_setup;
 pub mod color_rules;
 pub mod credentials;
 pub mod db;
+pub mod logging;
 pub mod mail;
 pub mod maildir;
 pub mod message_actions;

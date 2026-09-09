@@ -87,7 +87,17 @@ pub fn sync_account_with_limit(
                 Ok(v) => v,
                 Err(e) if is_disconnect(&e) => {
                     reconnects += 1;
-                    if reconnects > MAX_RECONNECTS {
+                    let give_up = reconnects > MAX_RECONNECTS;
+                    crate::logging::log_line(&format!(
+                        "sync: disconnected during handshake (account={:?} host={}:{} reconnect={}/{}{}): {e}",
+                        account.name,
+                        account.host,
+                        account.port,
+                        reconnects,
+                        MAX_RECONNECTS,
+                        if give_up { ", giving up" } else { "" },
+                    ));
+                    if give_up {
                         return Err(e.into());
                     }
                     continue;
@@ -153,7 +163,17 @@ pub fn sync_account_with_limit(
         }
 
         reconnects += 1;
-        if reconnects > MAX_RECONNECTS {
+        let give_up = reconnects > MAX_RECONNECTS;
+        crate::logging::log_line(&format!(
+            "sync: disconnected mid-fetch (account={:?} host={}:{} reconnect={}/{}{}), fetched_so_far={total_fetched} remaining={remaining}",
+            account.name,
+            account.host,
+            account.port,
+            reconnects,
+            MAX_RECONNECTS,
+            if give_up { ", giving up" } else { "" },
+        ));
+        if give_up {
             return Ok(SyncSummary {
                 fetched: total_fetched,
                 remaining,

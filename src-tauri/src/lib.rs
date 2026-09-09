@@ -619,6 +619,13 @@ fn accounts_config_path() -> String {
     paths::accounts_config_path().display().to_string()
 }
 
+/// 診断用ログ（`ferro_core::logging`）のファイルパス。設定画面の
+/// 「ログファイルを開く」ボタンで使う（`accounts_config_path`と同じ理由）。
+#[tauri::command]
+fn log_file_path() -> String {
+    paths::log_path().display().to_string()
+}
+
 /// 色分けルール(`color_rules.toml`)を読み込む。実際のマッチ判定はフロント側
 /// （`colorRules.js`）が行うので、ここは読み込んだ内容をそのまま返すだけ。
 /// GUI起動時の初回読み込みと、手編集後の「再読み込み」ボタンの両方で使う。
@@ -1154,6 +1161,7 @@ pub fn run() {
             update_settings,
             reload_accounts_config,
             accounts_config_path,
+            log_file_path,
             get_color_rules,
             add_color_rule,
             remove_color_rule,

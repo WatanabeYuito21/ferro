@@ -66,6 +66,17 @@
   永久に手が届かなくなる、という検索キャッチアップで踏んだのと同じ罠を
   避けるため、`purge_expired_batch`も同じ「バッチ全体失敗→1件ずつ
   フォールバック」の設計にしてある。
+- **診断ログ**（`ferro_core::logging`）: v0.0.2をレンタルサーバー宛のアカウントで
+  試した第三者から"connection closed by server"の報告を受けたが、それまで
+  Ferroは同期エラーをGUIの一時的なトースト通知（閉じたら消える）やCLI/TUIの
+  標準エラー出力にしか出しておらず、後から状況を再現する手段が無かった。
+  そこで`<app_data_dir>/ferro.log`に人が読める1行ログを追記するだけの
+  最小限の仕組みを追加した（tracing/log crateは個人利用規模には過剰と判断し
+  導入していない）。`ferro_core::sync`内の切断検出箇所（ハンドシェイク段階・
+  RETRパイプライン中の両方）に仕込んであるため、GUI/CLI/TUIどれから同期しても
+  自動的にログされる（呼び出し側の変更は不要）。パスワード等は絶対に書かない。
+  GUIの設定画面「診断」セクションから`log_file_path`コマンド経由でこのファイルを
+  開けるようにしてある（`accounts_config_path`と同じ`openPath`パターン）。
 - `ferro-tui`: `ratatui`+`crossterm`によるTUI版（neomutt的な使い方を想定。
   CLAUDE.md冒頭の「既存のneomutt」への言及どおり）。GUIと同じ`ferro-core`を
   土台にし、同じDB/Maildir/検索インデックス/`accounts.toml`/`color_rules.toml`を

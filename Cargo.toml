@@ -3,7 +3,7 @@ resolver = "2"
 members = ["ferro-core", "ferro-cli", "ferro-tui", "src-tauri"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 
 # devビルドのディスク使用量対策。デフォルト(debug = 2 = フルデバッグ情報)は
