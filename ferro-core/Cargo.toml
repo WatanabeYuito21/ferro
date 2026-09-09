@@ -7,7 +7,12 @@ edition.workspace = true
 dirs = "6.0.0"
 keyring = "4.2.0"
 mail-parser = { version = "0.11.8", default-features = false, features = ["full_encoding"] }
-native-tls = "0.2.18"
+# "vendored"はLinux/BSDでのビルド時にシステムのOpenSSL開発ヘッダ（libssl-dev等）を
+# 要求せず、OpenSSL自体をソースからビルドして静的リンクする（Windowsはschannel、
+# macOSはSecurity.frameworkを使うため、そちらでは実質無関係）。ビルド機に
+# Cコンパイラとperlが要る点はTauri/GTK系ネイティブ依存の要件と重複するため
+# 追加の負担にはならない見込み。
+native-tls = { version = "0.2.18", features = ["vendored"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 tantivy = "0.26.1"

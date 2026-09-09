@@ -63,6 +63,22 @@ CLI・TUI・GUIは同じDB/Maildir/検索インデックス/アカウント設�
 - Node.js / npm（GUIのフロントエンドビルド用）
 - Windowsでインストーラーをビルドする場合: `cargo install tauri-cli --version "^2"`
   （WiX/NSIS自体はtauri-bundlerが自動取得するので別途インストール不要）
+- **Linuxでビルドする場合**、上記に加えて以下のシステムパッケージが必要です
+  （GUI/TUIどちらをビルドする場合も、依存クレート経由で必要になります）
+  - Tauri公式の[Linux向け前提パッケージ](https://v2.tauri.app/start/prerequisites/#linux)一式
+    （`webkit2gtk-4.1`、`libgtk-3-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、
+    `build-essential`、`curl`、`wget`、`file`等。GUI (`src-tauri`) 専用）
+  - `libfontconfig1-dev`（`pkg-config`込み。フォント選択機能（`font-kit`）がLinuxでは
+    Fontconfig経由でインストール済みフォント一覧を取得するため。GUI専用）
+  - Cコンパイラ（gcc/clang）と`perl`（TLS通信に使う`native-tls`がLinux/BSDでは
+    `vendored`フィーチャでOpenSSLをソースからビルドするため。これにより`libssl-dev`等の
+    システムOpenSSL開発ヘッダは不要。CLI/TUI/GUI共通）
+  - macOS/WindowsはTLSにOS標準の機構（Security.framework/schannel）を使うため
+    上記のOpenSSL関連は無関係です
+
+  なお実際のLinux実機でのビルド・動作確認はこのプロジェクトの開発環境（Windows）からは
+  行えていないため、上記は依存クレートのドキュメント調査に基づく想定です。
+  問題があれば教えてください。
 
 ## 使い方（CLI）
 
