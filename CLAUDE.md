@@ -148,6 +148,21 @@
   （試行回数に比例する簡易的な指数バックオフ、`search::with_commit_retry`と
   同じ考え方）を全ての再接続箇所に追加した（本番2秒刻み、テストビルドは
   1ミリ秒刻みにして試験時間を短く保つ）。
+  **重大なバグ（v0.0.9で修正）**: `fetch_and_store_by_hash`が使う共通ヘルパー
+  `store_fetched_message`は、`messages::insert_new`のINSERT OR IGNOREで
+  DB側の重複排除はできていたが、**Maildirへのファイル書き込み自体は
+  重複チェックの前に無条件で実行していた**。通常のUIDL差分経路
+  （`fetch_and_store`）では呼び出し側が`pending`を事前に未取得分だけへ
+  絞り込んでいるため実害が無かったが、UIDL非対応フォールバック経路は
+  RETR前に重複かどうか分からず全件RETRする設計のため、**UIDL非対応
+  アカウントは同期のたびに（デフォルト5分ごと）メールボックス全体を
+  ディスクへ書き直し続けていた**。ユーザーがタスクマネージャーの
+  I/Oバイト数の異常な多さ・ファンの高回転として実際に踏んだ。
+  `store_fetched_message`の先頭で`messages::exists_by_uidl`をチェックし、
+  既知のuidlならMaildir書き込み自体をスキップするよう修正した
+  （`sync_fallback_does_not_rewrite_already_stored_messages_to_disk`
+  テストで、ファイルの`mtime`が2回目のsyncで変化しないことを確認している。
+  実際に修正前のコードに戻すとこのテストが失敗することも確認済み）。
 - `ferro-tui`: `ratatui`+`crossterm`によるTUI版（neomutt的な使い方を想定。
   CLAUDE.md冒頭の「既存のneomutt」への言及どおり）。GUIと同じ`ferro-core`を
   土台にし、同じDB/Maildir/検索インデックス/`accounts.toml`/`color_rules.toml`を
