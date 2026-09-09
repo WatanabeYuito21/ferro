@@ -1,3 +1,4 @@
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -511,5 +512,60 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
         uidl_call_count.load(Ordering::SeqCst),
         1,
         "second sync must not try UIDL again"
+    );
+}
+
+/// 実際にユーザーがファンの唸り/大量のI/Oバイト数として踏んだ回帰テスト:
+/// UIDL非対応フォールバック経路は、RETR前には重複かどうか分からないため
+/// 全件RETRし直すが、既に保存済みの内容ならMaildirへの書き込み自体を
+/// スキップしなければならない（DB側の重複排除だけでは、同期のたびに毎回
+/// メールボックス全体をディスクへ書き直すことになってしまう）。
+#[test]
+fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+
+    let fake_messages = vec![FakeMessage {
+        uidl: "unused-1",
+        raw: b"Subject: one\r\n\r\nbody1",
+    }];
+    let uidl_call_count = Arc::new(AtomicUsize::new(0));
+    let port = spawn_uidl_unsupported_server(fake_messages, uidl_call_count);
+    let account = make_account(&conn, port);
+
+    sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        |_, _| {},
+    )
+    .unwrap();
+
+    let uidl = content_uidl(b"Subject: one\r\n\r\nbody1");
+    let path = maildir::message_path(maildir_base.path(), account.id, &uidl);
+    let mtime_after_first_sync = fs::metadata(&path).unwrap().modified().unwrap();
+
+    let updated_account = accounts::get(&conn, account.id).unwrap().unwrap();
+    sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &updated_account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        |_, _| {},
+    )
+    .unwrap();
+
+    let mtime_after_second_sync = fs::metadata(&path).unwrap().modified().unwrap();
+    assert_eq!(
+        mtime_after_first_sync, mtime_after_second_sync,
+        "the already-known message must not be rewritten to disk on the second sync"
     );
 }

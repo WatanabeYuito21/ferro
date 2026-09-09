@@ -347,7 +347,7 @@ fn flush_pending_index(
 }
 
 /// RETRで取得した1件をMaildir/DBへ保存する。`uidl`が既に保存済みなら
-/// `messages::insert_new`のINSERT OR IGNOREにより何もせず`None`を返す
+/// Maildirへの書き込み・DB挿入とも何もせず`None`を返す
 /// （`fetch_and_store_by_hash`が、RETR前には重複かどうか分からない
 /// フォールバック経路で使う。通常のUIDL差分経路では`pending`が事前に
 /// 未取得分だけへ絞り込まれているため、実際にはここで弾かれることはない）。
@@ -358,6 +358,18 @@ fn store_fetched_message(
     uidl: &str,
     raw: &[u8],
 ) -> Result<Option<PendingIndex>, SyncError> {
+    // 既知のuidlならMaildirへの書き込み自体を丸ごとスキップする。
+    // `fetch_and_store`（通常のUIDL差分経路）では呼び出し側が事前に
+    // `exists_by_uidl`で絞り込み済みなのでここは基本的に常にfalseだが、
+    // `fetch_and_store_by_hash`（UIDL非対応サーバー向けのフォールバック経路。
+    // RETR前に重複かどうか分からないため全件RETRする）では、この事前チェックが
+    // 無いと同期のたびに毎回メールボックス全体をMaildirへ書き直すことになる
+    // （DB側は`insert_new`のINSERT OR IGNOREで重複排除できていたが、
+    // ディスクI/Oは防げていなかった。実際にユーザーがファンの唸り/大量の
+    // I/Oバイト数として踏んだ）。
+    if messages::exists_by_uidl(conn, account_id, uidl)? {
+        return Ok(None);
+    }
     maildir::store(maildir_base, account_id, uidl, raw)?;
 
     let parsed = parse_full(raw);
