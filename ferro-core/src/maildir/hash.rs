@@ -8,7 +8,7 @@
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-pub(super) fn fnv1a64(data: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(data: &[u8]) -> u64 {
     let mut hash = FNV_OFFSET_BASIS;
     for &byte in data {
         hash ^= u64::from(byte);

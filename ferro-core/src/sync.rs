@@ -2,12 +2,13 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use crate::db::accounts::Account;
+use crate::db::accounts::{self, Account};
 use crate::db::messages::{self, NewMessage};
 use crate::db::now_unix;
 use crate::mail::attachments;
 use crate::mail::parse::{make_preview, parse_full};
 use crate::maildir;
+use crate::maildir::hash::fnv1a64;
 use crate::pop3::{Pop3Client, Pop3Error};
 use crate::search::{IndexableMessage, SearchError, SearchIndex, with_commit_retry};
 
@@ -74,6 +75,12 @@ pub fn sync_account_with_limit(
     let mut total_fetched = 0u32;
     let mut budget = limit;
     let mut reconnects = 0u32;
+    // 一部のPOP3サーバー（レンタルサーバー等）はUIDLコマンドに対応しておらず、
+    // 送ると-ERRではなく接続そのものを切断してくる（実際に踏んだ）。
+    // `Account::uidl_supported`のドキュメント参照。前回までに非対応と判明していれば
+    // 今回はもうUIDLを試さず、最初からRETR後の内容ハッシュを代替uidlとして使う
+    // フォールバック経路（`fetch_and_store_by_hash`）に入る。
+    let mut uidl_known_unsupported = account.uidl_supported == Some(false);
 
     // CONNECT/USER/PASS/UIDLの段階での切断は、以前は`fetch_and_store`中のRETR
     // パイプライン切断と違って即座にエラーを返していた（他人のレンタルサーバー環境で
@@ -116,7 +123,102 @@ pub fn sync_account_with_limit(
         try_or_reconnect!("USER", client.user(&account.username));
         try_or_reconnect!("PASS", client.pass(password));
 
-        let server_uidls = try_or_reconnect!("UIDL", client.uidl());
+        if uidl_known_unsupported {
+            let items = try_or_reconnect!("LIST", client.list());
+            if items.is_empty() {
+                return Ok(SyncSummary {
+                    fetched: total_fetched,
+                    remaining: 0,
+                    ended_early: false,
+                });
+            }
+
+            let take = budget.map_or(items.len(), |b| (b as usize).min(items.len()));
+            let target_total = total_fetched + take as u32;
+            let msg_nums: Vec<u32> = items[..take].iter().map(|(num, _)| *num).collect();
+            let (new_count, attempted, session_broken) = fetch_and_store_by_hash(
+                conn,
+                maildir_base,
+                &mut client,
+                account.id,
+                &msg_nums,
+                search_index,
+                total_fetched,
+                target_total,
+                &mut on_progress,
+            )?;
+            let _ = client.quit();
+
+            total_fetched += new_count;
+            if let Some(b) = budget.as_mut() {
+                *b = b.saturating_sub(attempted);
+            }
+
+            // `items.len()`（budgetで絞る前の全件数）を使う。`fetch_and_store`側の
+            // `remaining = pending.len() - fetched_now`と同じ考え方
+            // （budget対象外だった分・切断で未処理だった分の両方を含める）。
+            let remaining = (items.len() - attempted as usize) as u32;
+            if !session_broken {
+                return Ok(SyncSummary {
+                    fetched: total_fetched,
+                    remaining,
+                    ended_early: false,
+                });
+            }
+
+            reconnects += 1;
+            let give_up = reconnects > MAX_RECONNECTS;
+            crate::logging::log_line(&format!(
+                "sync: disconnected mid-fetch (no-UIDL fallback) (account={:?} host={}:{} reconnect={}/{}{}), fetched_so_far={total_fetched} remaining={remaining}",
+                account.name,
+                account.host,
+                account.port,
+                reconnects,
+                MAX_RECONNECTS,
+                if give_up { ", giving up" } else { "" },
+            ));
+            if give_up {
+                return Ok(SyncSummary {
+                    fetched: total_fetched,
+                    remaining,
+                    ended_early: true,
+                });
+            }
+            continue;
+        }
+
+        let server_uidls = match client.uidl() {
+            Ok(uidls) => {
+                if account.uidl_supported != Some(true) {
+                    let _ = accounts::set_uidl_supported(conn, account.id, true);
+                }
+                uidls
+            }
+            Err(e) if is_disconnect(&e) => {
+                // -ERRではなく接続切断という形でUIDL非対応を表現するサーバーが実在する
+                // （`Account::uidl_supported`参照）。以後はこのアカウントに対して
+                // 二度とUIDLを試さず、フォールバック経路へ切り替える。
+                let _ = accounts::set_uidl_supported(conn, account.id, false);
+                uidl_known_unsupported = true;
+                reconnects += 1;
+                let give_up = reconnects > MAX_RECONNECTS;
+                crate::logging::log_line(&format!(
+                    "sync: UIDL not supported by server, switching to content-hash fallback \
+                     (account={:?} host={}:{} reconnect={}/{}{}): {e}",
+                    account.name,
+                    account.host,
+                    account.port,
+                    reconnects,
+                    MAX_RECONNECTS,
+                    if give_up { ", giving up" } else { "" },
+                ));
+                if give_up {
+                    return Err(e.into());
+                }
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
         let mut pending = Vec::new();
         for (msg_num, uidl) in server_uidls {
             if !messages::exists_by_uidl(conn, account.id, &uidl)? {
@@ -224,6 +326,60 @@ fn flush_pending_index(
     Ok(())
 }
 
+/// RETRで取得した1件をMaildir/DBへ保存する。`uidl`が既に保存済みなら
+/// `messages::insert_new`のINSERT OR IGNOREにより何もせず`None`を返す
+/// （`fetch_and_store_by_hash`が、RETR前には重複かどうか分からない
+/// フォールバック経路で使う。通常のUIDL差分経路では`pending`が事前に
+/// 未取得分だけへ絞り込まれているため、実際にはここで弾かれることはない）。
+fn store_fetched_message(
+    conn: &Connection,
+    maildir_base: &Path,
+    account_id: i64,
+    uidl: &str,
+    raw: &[u8],
+) -> Result<Option<PendingIndex>, SyncError> {
+    maildir::store(maildir_base, account_id, uidl, raw)?;
+
+    let parsed = parse_full(raw);
+    // 一覧に添付件数チップ/プレビュー行を表示するため、sync時に一度だけ計算して
+    // 保存しておく(一覧描画のたびにMaildirを読み直すのはCLAUDE.mdの
+    // 「起動時に何も舐めない」方針に反するため)。
+    let attachment_count = attachments::list_attachments(raw).len() as i64;
+    let preview = make_preview(parsed.body.as_deref());
+    let date_header = parsed.headers.date_header.unwrap_or_else(now_unix);
+    let new_id = messages::insert_new(
+        conn,
+        &NewMessage {
+            account_id,
+            uidl,
+            message_id_header: parsed.headers.message_id.as_deref(),
+            subject: parsed.headers.subject.as_deref(),
+            from_name: parsed.headers.from_name.as_deref(),
+            from_addr: parsed.headers.from_addr.as_deref(),
+            to_addr: parsed.headers.to_addr.as_deref(),
+            date_header,
+            size_bytes: raw.len() as i64,
+            attachment_count,
+            preview: preview.as_deref(),
+        },
+    )?;
+
+    Ok(new_id.map(|id| {
+        let from = format!(
+            "{} {}",
+            parsed.headers.from_name.as_deref().unwrap_or(""),
+            parsed.headers.from_addr.as_deref().unwrap_or("")
+        );
+        PendingIndex {
+            id,
+            subject: parsed.headers.subject.as_deref().unwrap_or("").to_string(),
+            from,
+            body: parsed.body.as_deref().unwrap_or("").to_string(),
+            date_header,
+        }
+    }))
+}
+
 /// `items`をRETR_BATCH_SIZE単位でパイプライン取得し、Maildirへの保存とDBへの
 /// 挿入をバッチ単位のトランザクションでまとめて行う。
 /// 戻り値は(このセッションで取得できた件数, セッションが切断されたか)。
@@ -272,45 +428,8 @@ fn fetch_and_store(
                 Err(e) => return Err(e.into()),
             };
 
-            maildir::store(maildir_base, account_id, uidl, &raw)?;
-
-            let parsed = parse_full(&raw);
-            // 一覧に添付件数チップ/プレビュー行を表示するため、sync時に一度だけ計算して
-            // 保存しておく(一覧描画のたびにMaildirを読み直すのはCLAUDE.mdの
-            // 「起動時に何も舐めない」方針に反するため)。
-            let attachment_count = attachments::list_attachments(&raw).len() as i64;
-            let preview = make_preview(parsed.body.as_deref());
-            let date_header = parsed.headers.date_header.unwrap_or_else(now_unix);
-            let new_id = messages::insert_new(
-                &tx,
-                &NewMessage {
-                    account_id,
-                    uidl,
-                    message_id_header: parsed.headers.message_id.as_deref(),
-                    subject: parsed.headers.subject.as_deref(),
-                    from_name: parsed.headers.from_name.as_deref(),
-                    from_addr: parsed.headers.from_addr.as_deref(),
-                    to_addr: parsed.headers.to_addr.as_deref(),
-                    date_header,
-                    size_bytes: raw.len() as i64,
-                    attachment_count,
-                    preview: preview.as_deref(),
-                },
-            )?;
-
-            if let Some(id) = new_id {
-                let from = format!(
-                    "{} {}",
-                    parsed.headers.from_name.as_deref().unwrap_or(""),
-                    parsed.headers.from_addr.as_deref().unwrap_or("")
-                );
-                pending_index.push(PendingIndex {
-                    id,
-                    subject: parsed.headers.subject.as_deref().unwrap_or("").to_string(),
-                    from,
-                    body: parsed.body.as_deref().unwrap_or("").to_string(),
-                    date_header,
-                });
+            if let Some(item) = store_fetched_message(&tx, maildir_base, account_id, uidl, &raw)? {
+                pending_index.push(item);
             }
             fetched += 1;
         }
@@ -330,6 +449,97 @@ fn fetch_and_store(
 
     flush_pending_index(conn, search_index, &mut pending_index)?;
     Ok((fetched, false))
+}
+
+/// RETRした内容から`messages.uidl`代わりの識別子を作る。UIDLコマンドに
+/// 対応していないサーバー向けのフォールバック（`fetch_and_store_by_hash`参照）。
+/// FNV-1a(64bit)は`ferro_core::maildir::hash`がMaildirのディレクトリ分散に
+/// 使っているのと同じ仕様が固定されたハッシュ関数で、衝突耐性を要する
+/// セキュリティ用途ではなく単なる重複排除用途なのでこれで十分。
+/// `"ferro-hash-v1-"`という接頭辞を付けているのは、(1)サーバー由来の本物の
+/// UIDLと見た目で区別できるようにする、(2)将来ハッシュ方式を変える場合に
+/// 版を分けられるようにするため。
+fn content_uidl(raw: &[u8]) -> String {
+    format!("ferro-hash-v1-{:016x}", fnv1a64(raw))
+}
+
+/// `msg_nums`をRETR_BATCH_SIZE単位でパイプライン取得し、`fetch_and_store`と
+/// 同じくMaildir/DBへ保存する。UIDLコマンドに対応していないサーバー向けの
+/// フォールバック経路で使う（`Account::uidl_supported`参照）。
+///
+/// `fetch_and_store`と異なり、呼び出し側はRETR前にどれが新着メッセージかを
+/// 判定できない（UIDLが無いため）。そのため`msg_nums`は絞り込まれておらず
+/// 全件が対象になり、既に保存済みの内容であっても再度RETRする（同じ内容の
+/// ハッシュ値になるため`store_fetched_message`内の`INSERT OR IGNORE`で
+/// 静かにスキップされ、DB/検索インデックスは重複しない。ただし通信量は
+/// 毎回全件分かかる）。
+///
+/// 戻り値は`(新規に保存できた件数, RETRを試みた件数, セッションが切断されたか)`。
+/// 前者は`SyncSummary::fetched`（「新規に取得・保存できた件数」）にそのまま
+/// 積み上げるための値、後者は`items.len() - 試みた件数`で`remaining`
+/// （まだ処理できていない件数）を計算するための値で、常に一致するとは限らない
+/// （既に保存済みの内容を再RETRした場合、試みてはいるが新規件数には入らない）。
+#[allow(clippy::too_many_arguments)]
+fn fetch_and_store_by_hash(
+    conn: &Connection,
+    maildir_base: &Path,
+    client: &mut Pop3Client,
+    account_id: i64,
+    msg_nums: &[u32],
+    search_index: &SearchIndex,
+    already_fetched: u32,
+    target_total: u32,
+    on_progress: &mut dyn FnMut(u32, u32),
+) -> Result<(u32, u32, bool), SyncError> {
+    let mut new_count = 0u32;
+    let mut attempted = 0u32;
+    let mut pending_index: Vec<PendingIndex> = Vec::new();
+
+    for batch in msg_nums.chunks(RETR_BATCH_SIZE) {
+        let results = match client.retr_batch(batch) {
+            Ok(results) => results,
+            Err(e) if is_disconnect(&e) => {
+                flush_pending_index(conn, search_index, &mut pending_index)?;
+                return Ok((new_count, attempted, true));
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let tx = conn.unchecked_transaction()?;
+        let mut disconnected = false;
+        for result in results {
+            let raw = match result {
+                Ok(raw) => raw,
+                Err(e) if is_disconnect(&e) => {
+                    disconnected = true;
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            };
+
+            let uidl = content_uidl(&raw);
+            if let Some(item) = store_fetched_message(&tx, maildir_base, account_id, &uidl, &raw)? {
+                pending_index.push(item);
+                new_count += 1;
+            }
+            attempted += 1;
+        }
+        tx.commit()?;
+
+        if pending_index.len() >= SEARCH_COMMIT_BATCH_SIZE {
+            flush_pending_index(conn, search_index, &mut pending_index)?;
+        }
+
+        on_progress(already_fetched + attempted, target_total);
+
+        if disconnected {
+            flush_pending_index(conn, search_index, &mut pending_index)?;
+            return Ok((new_count, attempted, true));
+        }
+    }
+
+    flush_pending_index(conn, search_index, &mut pending_index)?;
+    Ok((new_count, attempted, false))
 }
 
 fn is_disconnect(err: &Pop3Error) -> bool {

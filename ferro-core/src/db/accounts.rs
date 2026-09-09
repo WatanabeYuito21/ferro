@@ -11,6 +11,12 @@ pub struct Account {
     pub username: String,
     pub use_tls: bool,
     pub created_at: i64,
+    /// UIDLコマンドに対応しているサーバーか。`None`は未判定（次回同期時に
+    /// まず試す）。一部のレンタルサーバー等はUIDLに対応しておらず、送ると
+    /// 接続を切断してくる（実際に踏んだ）ため、`ferro_core::sync`が一度
+    /// 失敗を検出したら`Some(false)`を記録し、以後は最初からRETR後の内容
+    /// ハッシュを代替uidlとして使うフォールバック経路に切り替える。
+    pub uidl_supported: Option<bool>,
 }
 
 /// 新規アカウント作成時の入力。パスワードはここに含まない
@@ -41,7 +47,7 @@ pub fn insert(conn: &Connection, new: &NewAccount) -> rusqlite::Result<i64> {
 
 pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Account>> {
     conn.query_row(
-        "SELECT id, name, host, port, username, use_tls, created_at
+        "SELECT id, name, host, port, username, use_tls, created_at, uidl_supported
          FROM accounts WHERE id = ?1",
         [id],
         row_to_account,
@@ -51,7 +57,7 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Account>> {
 
 pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Account>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, host, port, username, use_tls, created_at
+        "SELECT id, name, host, port, username, use_tls, created_at, uidl_supported
          FROM accounts ORDER BY id",
     )?;
     stmt.query_map([], row_to_account)?.collect()
@@ -60,12 +66,22 @@ pub fn list(conn: &Connection) -> rusqlite::Result<Vec<Account>> {
 /// `accounts.toml`との照合用。`name`には一意インデックスがあるので高々1件。
 pub fn find_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<Account>> {
     conn.query_row(
-        "SELECT id, name, host, port, username, use_tls, created_at
+        "SELECT id, name, host, port, username, use_tls, created_at, uidl_supported
          FROM accounts WHERE name = ?1",
         [name],
         row_to_account,
     )
     .optional()
+}
+
+/// `ferro_core::sync`がUIDLコマンドの成否を検出した後に記録する
+/// （`Account::uidl_supported`のドキュメント参照）。
+pub fn set_uidl_supported(conn: &Connection, id: i64, supported: bool) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE accounts SET uidl_supported = ?1 WHERE id = ?2",
+        params![supported, id],
+    )?;
+    Ok(())
 }
 
 /// 設定ファイルとの照合（`account_config::reconcile`）で、既存アカウントの
@@ -102,6 +118,7 @@ fn row_to_account(row: &Row) -> rusqlite::Result<Account> {
         username: row.get(4)?,
         use_tls: row.get(5)?,
         created_at: row.get(6)?,
+        uidl_supported: row.get(7)?,
     })
 }
 
