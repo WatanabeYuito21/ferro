@@ -36,7 +36,7 @@
   効かないという形で実際に踏み、500文字に広げると同時に`reindex_all`が
   Maildirから読み直した内容で既存メッセージの`preview`/`attachment_count`も
   遡って更新するようにした）、外観設定（テーマ: ライト/ダーク/システム追従、
-  アクセントカラー、フォント、文字サイズ。`ferro_core::db::settings::Settings`に
+  アクセントカラー、フォント、文字サイズ。`ferro_core::settings::Settings`に
   永続化し、フロント側の`frontend/src/lib/appearance.js`が`<html>`の
   data属性とCSSカスタムプロパティ（`app.css`）を書き換えて反映する。
   `--accent-hover`/`--accent-soft-bg`は固定値ではなく`color-mix()`で
@@ -66,6 +66,25 @@
   永久に手が届かなくなる、という検索キャッチアップで踏んだのと同じ罠を
   避けるため、`purge_expired_batch`も同じ「バッチ全体失敗→1件ずつ
   フォールバック」の設計にしてある。
+- **設定ファイルへの移行**（`ferro_core::settings`、v0.0.7）: 上記のUI設定は
+  当初SQLiteの`settings`テーブル（key/value）に保存していたが、
+  「設定ファイルになっていない他の設定も設定ファイルに起こしてほしい」
+  という要望を受け、`accounts.toml`/`color_rules.toml`と同じくTOMLファイル
+  （`settings.toml`）ベースに移行した。`color_rules.toml`と同じくパスワード等の
+  秘匿情報を含まない純粋な表示・動作設定なのでDBテーブルへのreconcileは無く、
+  GUI/TUIがこのファイルを直接読み書きする。TOMLとして型が妥当でも意味的に
+  不正な値（未知のtheme文字列、負のretention_days等）は`Settings::normalize`が
+  安全な既定値へ補正する（旧DB実装のkeyごとのフォールバックと同じ考え方）が、
+  構文自体が壊れている場合（型不一致等）は`color_rules::load`と同じく
+  `SettingsError::Parse`として伝播する。設定画面のように利用者へエラーを
+  見せられる箇所は`load`をそのまま使い、バックグラウンド同期・保持期間
+  クリーンアップ等エラーを見せる手段が無い箇所は`load_or_default`
+  （読み込み失敗時は安全側の既定値にフォールバックし、処理自体は止めない）を使う。
+  既存ユーザーが設定を失わないよう、`migrate_from_db_once`が初回起動時に
+  旧DBテーブルの内容を新しい設定ファイルへ一度だけ引き継ぐ（設定ファイルの
+  存在自体を「移行済み」の目印にする）。旧`settings`テーブル自体は当面
+  DBスキーマに残すが、以後この移行関数以外からは読み書きしない
+  （ドロップは将来の掃除タイミングで検討）。
 - **診断ログ**（`ferro_core::logging`）: v0.0.2をレンタルサーバー宛のアカウントで
   試した第三者から"connection closed by server"の報告を受けたが、それまで
   Ferroは同期エラーをGUIの一時的なトースト通知（閉じたら消える）やCLI/TUIの
@@ -226,7 +245,7 @@
 3. **メッセージ一覧は仮想スクロール必須** — 1000万件を素朴にレンダリングしない
 4. **新着メールのインデックス投入は非同期バックグラウンドタスク** — UIをブロックしない。
    実装済み: GUI(`src-tauri`)は起動時に`spawn_background_sync`で専用OSスレッドを立ち上げ、
-   設定画面で変更可能な間隔（`db::settings::sync_interval_minutes`、デフォルト5分）で
+   設定画面で変更可能な間隔（`settings::Settings::sync_interval_minutes`、デフォルト5分）で
    全アカウントを自動同期し、結果を`background-sync`イベントでフロントエンドに通知する。
    `use_tls=false`（平文専用）のアカウントも自動同期の対象に含める
    （`allow_plaintext`は`!account.use_tls`から決める。平文専用という選択自体が

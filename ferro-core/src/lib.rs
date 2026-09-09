@@ -14,4 +14,5 @@ pub mod paths;
 pub mod pop3;
 pub mod reindex;
 pub mod search;
+pub mod settings;
 pub mod sync;

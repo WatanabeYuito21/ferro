@@ -41,3 +41,9 @@ pub fn color_rules_config_path() -> PathBuf {
 pub fn log_path() -> PathBuf {
     app_data_dir().join("ferro.log")
 }
+
+/// UI設定（外観・保持日数等）を保持するTOMLファイル。`accounts.toml`/
+/// `color_rules.toml`と同じく、これが正の情報源（`settings::load/save`参照）。
+pub fn settings_config_path() -> PathBuf {
+    app_data_dir().join("settings.toml")
+}

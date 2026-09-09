@@ -9,13 +9,13 @@ use ferro_core::credentials;
 use ferro_core::db::accounts::Account;
 use ferro_core::db::labels::Label;
 use ferro_core::db::messages::{Folder, Message};
-use ferro_core::db::settings::Settings;
 use ferro_core::db::{self, Connection};
 use ferro_core::mail::attachments::{self, AttachmentInfo};
 use ferro_core::mail::parse::extract_plain_text_body;
 use ferro_core::search::SearchIndex;
+use ferro_core::settings::Settings;
 use ferro_core::sync::SyncSummary;
-use ferro_core::{maildir, paths, reindex, sync};
+use ferro_core::{maildir, paths, reindex, settings, sync};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -534,17 +534,17 @@ impl From<SettingsView> for Settings {
 }
 
 #[tauri::command]
-fn get_settings(state: State<AppState>) -> Result<SettingsView, String> {
-    let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
-    db::settings::get(&conn).map(SettingsView::from).map_err(|e| e.to_string())
+fn get_settings() -> Result<SettingsView, String> {
+    settings::load(&paths::settings_config_path())
+        .map(SettingsView::from)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn update_settings(app: AppHandle, settings: SettingsView) -> Result<(), String> {
+async fn update_settings(settings: SettingsView) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-        db::settings::set(&conn, &settings.into()).map_err(|e| e.to_string())
+        ferro_core::settings::save(&paths::settings_config_path(), &settings.into())
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -748,7 +748,7 @@ async fn reindex_all(app: AppHandle) -> Result<usize, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// メール保持期間（`db::settings::Settings::retention_days`）が切れたメッセージを
+/// メール保持期間（`settings::Settings::retention_days`）が切れたメッセージを
 /// まとめて完全に削除する（設定画面の「今すぐ整理する」ボタン用）。
 /// `spawn_retention_cleanup`が定期的に同じ処理をバックグラウンドで行うが、
 /// 保持日数を変更した直後にすぐ効果を見たい場合のためにも手動実行できるようにする。
@@ -757,10 +757,9 @@ async fn reindex_all(app: AppHandle) -> Result<usize, String> {
 async fn purge_expired_messages(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let retention_days = {
-            let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
-            db::settings::get(&conn).map_err(|e| e.to_string())?.retention_days
-        };
+        // 設定ファイルが一時的に読めない/壊れていても、安全な既定値(0=無期限＝
+        // 何も削除しない)にフォールバックする（`load_or_default`のドキュメント参照）。
+        let retention_days = settings::load_or_default(&paths::settings_config_path()).retention_days;
         if retention_days <= 0 {
             return Ok(0);
         }
@@ -798,19 +797,13 @@ struct BackgroundSyncEvent {
     error: Option<String>,
 }
 
-/// 設定画面の「Sync間隔」を読む。ロック取得や読み取りに失敗した場合・
+/// 設定画面の「Sync間隔」を読む。設定ファイルの読み取りに失敗した場合・
 /// 0以下が保存されていた場合はデフォルト(5分)にフォールバックする
-/// （バックグラウンドスレッドを止めないため、ここではエラーを伝播しない）。
-fn current_sync_interval(app_handle: &AppHandle) -> Duration {
-    let state = app_handle.state::<AppState>();
-    let minutes = state
-        .read_conn
-        .lock()
-        .ok()
-        .and_then(|conn| db::settings::get(&conn).ok())
-        .map(|s| s.sync_interval_minutes)
-        .filter(|m| *m > 0)
-        .unwrap_or(5);
+/// （バックグラウンドスレッドを止めないため、ここではエラーを伝播しない。
+/// `settings::load_or_default`参照）。
+fn current_sync_interval() -> Duration {
+    let minutes = settings::load_or_default(&paths::settings_config_path()).sync_interval_minutes;
+    let minutes = if minutes > 0 { minutes } else { 5 };
     Duration::from_secs((minutes as u64) * 60)
 }
 
@@ -833,7 +826,7 @@ fn spawn_background_sync(app_handle: AppHandle) {
         // `step_search_catchup`のドキュメント参照。
         let mut catchup_after_id = 0i64;
         loop {
-            std::thread::sleep(current_sync_interval(&app_handle));
+            std::thread::sleep(current_sync_interval());
             run_background_sync_once(&app_handle);
             step_search_catchup(&app_handle, &mut catchup_after_id);
         }
@@ -922,7 +915,7 @@ fn spawn_initial_search_catchup(app_handle: AppHandle) {
     });
 }
 
-/// メール保持期間（`db::settings::Settings::retention_days`）のバックグラウンド
+/// メール保持期間（`settings::Settings::retention_days`）のバックグラウンド
 /// 掃除スレッド。起動直後に一度、以後は`RETENTION_CHECK_INTERVAL`ごとに実行する
 /// （保持日数は同期間隔ほど頻繁に変える設定ではないと想定されるため、短い間隔は
 /// 不要。すぐに効果を見たい場合は設定画面の「今すぐ整理する」ボタン
@@ -940,15 +933,9 @@ fn spawn_retention_cleanup(app_handle: AppHandle) {
 
 fn run_retention_cleanup_once(app_handle: &AppHandle) {
     let state = app_handle.state::<AppState>();
-    let retention_days = {
-        let Ok(conn) = state.read_conn.lock() else {
-            return;
-        };
-        match db::settings::get(&conn) {
-            Ok(settings) => settings.retention_days,
-            Err(_) => return,
-        }
-    };
+    // 設定ファイルが一時的に読めない/壊れていても、安全な既定値(0=無期限＝
+    // 何も削除しない)にフォールバックする（`load_or_default`のドキュメント参照）。
+    let retention_days = settings::load_or_default(&paths::settings_config_path()).retention_days;
     // 0(無期限)がデフォルト。既存ユーザーが明示的に設定しない限り何も削除しない。
     if retention_days <= 0 {
         return;
@@ -1099,6 +1086,14 @@ pub fn run() {
     // か再起動で反映される）。
     if let Err(e) = account_config::load_and_reconcile(&write_conn, &paths::accounts_config_path()) {
         eprintln!("warning: failed to load/reconcile accounts.toml: {e}");
+    }
+
+    // 設定はv0.0.6までSQLiteの`settings`テーブルに保存していたが、
+    // accounts.toml/color_rules.tomlと同じくファイルベースに移行した
+    // （`settings::migrate_from_db_once`参照）。設定ファイルが既に存在する
+    // 場合は何もしないので、既存ユーザーの初回起動時にだけ一度実行される。
+    if let Err(e) = settings::migrate_from_db_once(&write_conn, &paths::settings_config_path()) {
+        eprintln!("warning: failed to migrate settings from the old database table: {e}");
     }
 
     tauri::Builder::default()

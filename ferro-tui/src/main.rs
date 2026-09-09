@@ -18,7 +18,7 @@ use crossterm::event::{self, Event};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use ferro_core::search::SearchIndex;
-use ferro_core::{account_config, db, paths};
+use ferro_core::{account_config, db, paths, settings};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -36,6 +36,13 @@ fn main() -> anyhow::Result<()> {
     // （手編集ファイルの構文ミス等で失敗してもTUI自体は起動させる）。
     if let Err(e) = account_config::load_and_reconcile(&write_conn, &paths::accounts_config_path()) {
         eprintln!("warning: failed to load/reconcile accounts.toml: {e}");
+    }
+    // 設定はv0.0.6までSQLiteの`settings`テーブルに保存していたが、
+    // accounts.toml/color_rules.tomlと同じくファイルベースに移行した
+    // （`settings::migrate_from_db_once`参照）。設定ファイルが既に存在する
+    // 場合は何もしないので、既存ユーザーの初回起動時にだけ一度実行される。
+    if let Err(e) = settings::migrate_from_db_once(&write_conn, &paths::settings_config_path()) {
+        eprintln!("warning: failed to migrate settings from the old database table: {e}");
     }
     let search_index = SearchIndex::open_or_create(&paths::search_index_dir())?;
 
