@@ -221,6 +221,14 @@
   「セッションが切れたら再接続して続きから再開する」仕組みを最初から設計に入れておくとよい
   （UIDL差分方式なら再開しても安全＝既に保存済みのメッセージは再取得されない）。実装済み
   （`ferro_core::sync`のセッションループ、`Pop3Error::ConnectionClosed`）。
+  **当初はこの再接続がRETRパイプライン中の切断にしか効かず、CONNECT/USER/PASS/UIDLの
+  ハンドシェイク段階での切断は即座にエラーを返していた**（v0.0.1をレンタルサーバー宛の
+  アカウントで試した第三者が実際に"connection closed by server"のエラーで踏んだ。
+  一部のレンタルサーバー/独自POP3実装はハンドシェイク中でも接続を切ることがあると
+  みられる）。`sync_account_with_limit`の`loop`内で`try_or_reconnect!`マクロを使い、
+  ハンドシェイク段階の切断も同じ`MAX_RECONNECTS`予算でリトライするように修正した
+  （ハンドシェイク段階ではまだ何も取得できていないため、予算を使い切った場合は
+  `fetch_and_store`側のような`ended_early`付きの部分成功ではなく素直にエラーを返す）。
 - **Tantivyの`IndexWriter`がWindows実機で断続的に死ぬ**: `commit()`が
   `"An error occurred in a thread: 'An index writer was killed...'"`で失敗することがある
   （`ferro bench`で1000〜数千件規模の索引投入を繰り返すと、体感1〜2割の頻度で再現。実データ

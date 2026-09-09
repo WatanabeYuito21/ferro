@@ -41,6 +41,27 @@ fn spawn_server_with_drop(messages: Vec<FakeMessage>, drop_after_retr: Option<u3
     port
 }
 
+/// 最初の`early_drops`回の接続は挨拶すら送らずに即座に切断する
+/// （レンタルサーバー等で起きた、ハンドシェイク段階での"connection closed by
+/// server"の再現）。`early_drops`回を過ぎたら通常どおり応答する。
+fn spawn_server_with_early_drops(messages: Vec<FakeMessage>, early_drops: u32) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    thread::spawn(move || {
+        for (i, stream) in listener.incoming().take(early_drops as usize + 1).enumerate() {
+            let stream = stream.unwrap();
+            if (i as u32) < early_drops {
+                drop(stream);
+                continue;
+            }
+            handle_session(stream, &messages, None);
+        }
+    });
+
+    port
+}
+
 fn handle_session(mut stream: TcpStream, messages: &[FakeMessage], drop_after_retr: Option<u32>) {
     stream.write_all(b"+OK fake pop3 ready\r\n").unwrap();
     let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -265,4 +286,76 @@ fn sync_reconnects_after_mid_pipeline_disconnect() {
     assert!(!summary.ended_early);
     assert!(maildir::exists(maildir_base.path(), account.id, "u1"));
     assert!(maildir::exists(maildir_base.path(), account.id, "u2"));
+}
+
+/// 他人のレンタルサーバー環境で実際に"connection closed by server"として
+/// 踏んだケース: RETRパイプライン中ではなく、CONNECT/USER/PASS/UIDLの
+/// ハンドシェイク段階で接続が切断される場合も、同じ再接続予算内であれば
+/// リトライして復旧できることを確認する。
+#[test]
+fn sync_reconnects_after_disconnect_during_initial_handshake() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+
+    let fake_messages = vec![FakeMessage {
+        uidl: "u1",
+        raw: b"Subject: one\r\n\r\nbody1",
+    }];
+    // 最初の2回の接続は挨拶を送らず切断される。3回目でようやく成功する
+    // （MAX_RECONNECTS=5の予算内）。
+    let port = spawn_server_with_early_drops(fake_messages, 2);
+    let account = make_account(&conn, port);
+
+    let summary = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary,
+        SyncSummary {
+            fetched: 1,
+            remaining: 0,
+            ended_early: false
+        }
+    );
+    assert!(maildir::exists(maildir_base.path(), account.id, "u1"));
+}
+
+/// ハンドシェイク段階での切断が再接続予算(`MAX_RECONNECTS`)を使い切るほど
+/// 続く場合は、まだ何も取得できていないためエラーを返す
+/// （`ended_early`付きの部分成功では表現できないため）。
+#[test]
+fn sync_gives_up_after_exhausting_reconnects_during_initial_handshake() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+
+    // MAX_RECONNECTS(5)を超える6回連続で切断させる。
+    let port = spawn_server_with_early_drops(vec![], 6);
+    let account = make_account(&conn, port);
+
+    let result = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        |_, _| {},
+    );
+
+    assert!(matches!(
+        result,
+        Err(SyncError::Pop3(Pop3Error::ConnectionClosed))
+    ));
 }
