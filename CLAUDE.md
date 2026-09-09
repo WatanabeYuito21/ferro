@@ -77,6 +77,12 @@
   自動的にログされる（呼び出し側の変更は不要）。パスワード等は絶対に書かない。
   GUIの設定画面「診断」セクションから`log_file_path`コマンド経由でこのファイルを
   開けるようにしてある（`accounts_config_path`と同じ`openPath`パターン）。
+  実際にこのログで、レンタルサーバー宛のアカウントが「ハンドシェイク段階で
+  6回連続・3秒間隔で切断される」ことが判明したが、当初は"handshake"としか
+  出しておらずCONNECT/USER/PASS/UIDLのどこで切れているかまでは分からなかった
+  ため、`try_or_reconnect!`マクロに段階名（`"CONNECT"`/`"USER"`/`"PASS"`/`"UIDL"`）
+  を渡すよう変更し、どのPOP3コマンドの直後に切断されたかがログから直接
+  分かるようにした。
 - `ferro-tui`: `ratatui`+`crossterm`によるTUI版（neomutt的な使い方を想定。
   CLAUDE.md冒頭の「既存のneomutt」への言及どおり）。GUIと同じ`ferro-core`を
   土台にし、同じDB/Maildir/検索インデックス/`accounts.toml`/`color_rules.toml`を

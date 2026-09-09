@@ -82,14 +82,15 @@ pub fn sync_account_with_limit(
     // まだ何も取得できていないため、予算を使い切った場合はfetch_and_store側の
     // ような`ended_early`付きの部分成功では表現できず、そのままエラーを返す。
     macro_rules! try_or_reconnect {
-        ($e:expr) => {
+        ($stage:literal, $e:expr) => {
             match $e {
                 Ok(v) => v,
                 Err(e) if is_disconnect(&e) => {
                     reconnects += 1;
                     let give_up = reconnects > MAX_RECONNECTS;
                     crate::logging::log_line(&format!(
-                        "sync: disconnected during handshake (account={:?} host={}:{} reconnect={}/{}{}): {e}",
+                        "sync: disconnected during {} (account={:?} host={}:{} reconnect={}/{}{}): {e}",
+                        $stage,
                         account.name,
                         account.host,
                         account.port,
@@ -108,16 +109,14 @@ pub fn sync_account_with_limit(
     }
 
     loop {
-        let mut client = try_or_reconnect!(Pop3Client::connect(
-            &account.host,
-            account.port,
-            account.use_tls,
-            allow_plaintext,
-        ));
-        try_or_reconnect!(client.user(&account.username));
-        try_or_reconnect!(client.pass(password));
+        let mut client = try_or_reconnect!(
+            "CONNECT",
+            Pop3Client::connect(&account.host, account.port, account.use_tls, allow_plaintext,)
+        );
+        try_or_reconnect!("USER", client.user(&account.username));
+        try_or_reconnect!("PASS", client.pass(password));
 
-        let server_uidls = try_or_reconnect!(client.uidl());
+        let server_uidls = try_or_reconnect!("UIDL", client.uidl());
         let mut pending = Vec::new();
         for (msg_num, uidl) in server_uidls {
             if !messages::exists_by_uidl(conn, account.id, &uidl)? {
