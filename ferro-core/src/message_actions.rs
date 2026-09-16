@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::db::Connection;
 use crate::db::messages;
+use crate::db::purged_uidls;
 use crate::maildir;
 use crate::search::{SearchError, SearchIndex, with_commit_retry};
 
@@ -56,6 +57,13 @@ pub fn set_deleted(
 /// キャッチアップで踏んだのと同じ罠なので、削除処理でも同じ対策を入れておく）。
 /// 個別に失敗したメッセージはDB行・Maildirファイルもまだ消さないので、
 /// 次回の呼び出しで安全にやり直せる。
+///
+/// DB行を消すのと合わせて`purged_uidls`にも記録する。Ferroの同期はPOP3の
+/// DELEを送らない設計（CLAUDE.md参照）なので、サーバー側にはまだこのメッセージが
+/// 残っている。記録しないと次回syncのUIDL差分計算が「DBに無い＝未取得」と
+/// 誤判定し、消したはずのメッセージを際限なく再取得しては次のクリーンアップで
+/// 再度消す、という無駄な往復になる（「今すぐ整理する」実行後のsyncで件数が
+/// 異常に多い、として実際に踏んだ）。
 pub fn purge_expired_batch(
     conn: &Connection,
     maildir_base: &Path,
@@ -94,6 +102,7 @@ pub fn purge_expired_batch(
         // Maildirファイルが既に無い場合等はベストエフォートで無視する
         // （`account_setup::remove`と同じ理由）。
         let _ = maildir::remove(maildir_base, message.account_id, &message.uidl);
+        purged_uidls::mark_purged(conn, message.account_id, &message.uidl)?;
     }
 
     let ids: Vec<i64> = removable.iter().map(|m| m.id).collect();
@@ -225,6 +234,43 @@ mod tests {
             purge_expired_batch(&conn, maildir_dir.path(), &search_index, 500, 500).unwrap(),
             0
         );
+    }
+
+    /// 「今すぐ整理する」実行後のsyncでUIDL差分計算が誤って新着扱いしないよう、
+    /// 完全削除したuidlが`purged_uidls`に記録されることを確認する回帰テスト
+    /// （`crate::db::purged_uidls`のドキュメント参照）。
+    #[test]
+    fn purge_expired_batch_records_purged_uidls_so_sync_will_not_refetch_them() {
+        let conn = open_in_memory().unwrap();
+        let maildir_dir = tempfile::tempdir().unwrap();
+        let search_index = SearchIndex::create_in_ram().unwrap();
+        let account_id = make_account(&conn);
+
+        let raw = b"Subject: old alert\r\n\r\nbody";
+        crate::maildir::store(maildir_dir.path(), account_id, "old", raw).unwrap();
+        db_messages::insert_new(
+            &conn,
+            &NewMessage {
+                account_id,
+                uidl: "old",
+                message_id_header: None,
+                subject: Some("old alert"),
+                from_name: None,
+                from_addr: None,
+                to_addr: None,
+                date_header: 100,
+                size_bytes: raw.len() as i64,
+                attachment_count: 0,
+                preview: None,
+            },
+        )
+        .unwrap();
+
+        assert!(!crate::db::purged_uidls::is_purged(&conn, account_id, "old").unwrap());
+
+        purge_expired_batch(&conn, maildir_dir.path(), &search_index, 500, 500).unwrap();
+
+        assert!(crate::db::purged_uidls::is_purged(&conn, account_id, "old").unwrap());
     }
 
     #[test]
