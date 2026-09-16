@@ -24,7 +24,8 @@
   （`account_config::reconcile`）、メール本文/添付パース（`mail-parser`ベース）
 - `ferro-cli`: `account add/list/remove/reload-config`, `sync`, `list`, `search`, `reindex`, `bench`
   （開発用のスループット/レイテンシ計測、`$TMPDIR/ferro-bench`に専用データを生成し本番データには
-  触れない）、`read`/`flag`/`delete`（既読・フラグ・論理削除）
+  触れない）、`read`/`flag`/`delete`（既読・フラグ・論理削除）、`label list`（一覧表示のみ。
+  作成/削除はGUI限定）、`label-rule add/list/remove/apply`（受信時の自動ラベル付けルール）
 - `src-tauri` + `frontend`（Svelte）: アカウント管理、同期、メッセージ一覧（自前仮想スクロール）、
   全文検索、メッセージ詳細表示（本文プレーンテキスト・添付一覧・保存ダイアログ）、
   フォルダ/ラベルによる整理、設定画面、色分けルール（`color_rules.toml`。件名/差出人/
@@ -83,6 +84,33 @@
   フォールバック経路の`store_fetched_message`の両方）は`messages::exists_by_uidl`に
   加えて`purged_uidls::is_purged`もチェックし、過去に保持期間切れで消したuidlは
   二度と新着扱いしない。
+- **受信時の自動ラベル付けルール**（`ferro_core::label_rules`/`message_filter`、v0.0.11）:
+  「詳細検索機能を付けて、その条件に当てはまるものは受信時に自動でラベル付けできる
+  ようにしたい」という要望を受けて追加した。差出人/件名/本文への部分文字列一致と
+  添付ファイルの有無を条件に、AND結合（Gmailフィルタと同じ。OR相当が欲しい場合は
+  同じラベルを指すルールを複数作る運用）でラベルを自動付与する。条件は
+  `ferro_core::message_filter::MessageFilter`という共有データ形に切り出してあり、
+  将来の詳細検索機能（Tantivyのフィールド指定クエリ）でも同じ形を入力として使う
+  想定だが、**判定エンジンはあえて分離した**: ラベルルールは`MessageFilter::matches`
+  による大文字小文字無視の完全一致（部分文字列）のみで判定する（Tantivyを介さない）。
+  Tantivyのバイグラム＋前方一致は検索の"あいまいさ"を許容する設計であり、もし
+  ラベルルールの判定にもそれを使うと、sync時にその場で1件だけ判定する経路と
+  「今すぐ適用」による既存メールへの一括バックフィル（`label_rules::apply_all`）とで
+  判定結果がズレて「新着では付いたのに今すぐ適用では付かない」という食い違いを
+  生みかねない（CLAUDE.mdの他の箇所に記録されている過去の実害と同種の罠）。
+  完全一致のみに統一することで両経路が構造的に一致する。
+  ルールは`label_rules.toml`（`accounts.toml`/`color_rules.toml`と同じくTOMLが
+  正の情報源で、DBテーブルへのreconcileは無い）に保存し、ラベルは`labels.name`
+  （migration 0003でUNIQUE制約済み）を自然キーとして参照する。ラベルがリネーム/
+  削除されて名前が解決できなくなったルールは、`accounts.toml`のアカウントと違い
+  自動削除も警告もせず、単に何も付与しないルールとして静かにスキップする
+  （`db::labels::find_by_name`が`None`を返すだけなので実害が無いため）。
+  `label_rules::apply_all`（「今すぐ適用」ボタン、`reindex_all`と同じ
+  `messages::list_all_for_reindex`のidカーソルでバッチ処理）は、差出人・件名・
+  添付有無はDB行だけで判定できるため、どのルールも本文条件(`body_contains`)を
+  指定していなければMaildirを一切読まない（1件でも本文条件があれば、そのバッチ
+  だけMaildirから読み直す）。sync時の自動判定（`sync::store_fetched_message`）は
+  RETR直後の`parse_full`結果をそのまま使うため追加のI/Oは発生しない。
 - **設定ファイルへの移行**（`ferro_core::settings`、v0.0.7）: 上記のUI設定は
   当初SQLiteの`settings`テーブル（key/value）に保存していたが、
   「設定ファイルになっていない他の設定も設定ファイルに起こしてほしい」
