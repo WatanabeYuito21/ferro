@@ -267,3 +267,6 @@ GitHub Actions（`.github/workflows/release.yml`）が同じバージョンの�
 - Tantivyの`IndexWriter`がWindows環境で断続的に落ちることがある未解決の問題があります（詳細は[CLAUDE.md](./CLAUDE.md)参照）。自動リトライで大半は吸収されますが、完全な解決には至っていません。
 - 検索の日本語対応は形態素解析ではなくCJKバイグラム（機械的な2文字ずつの部分一致）によるものです。
 - SMTP送信機能はありません（受信専用）。
+- RFC2047でエンコードされず生のlegacy charset（Shift_JIS/EUC-JP/ISO-2022-JP）バイト列が
+  直接入っているヘッダーの文字化けは、件名(Subject)のみ復元処理を入れています。
+  差出人表示名（From）等の他のヘッダーで同じ原因の文字化けが起きる可能性は残っています。

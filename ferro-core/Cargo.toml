@@ -5,6 +5,10 @@ edition.workspace = true
 
 [dependencies]
 dirs = "6.0.0"
+# mail-parserが`full_encoding`フィーチャ経由で既に依存に含めているが、生ヘッダーの
+# legacy日本語charsetフォールバック（`mail::parse::recover_mojibake_header`参照）で
+# 直接使うため、推移的依存に頼らず明示的な直接依存にしておく。
+encoding_rs = "0.8.35"
 keyring = "4.2.0"
 mail-parser = { version = "0.11.8", default-features = false, features = ["full_encoding"] }
 # "vendored"はLinux/BSDでのビルド時にシステムのOpenSSL開発ヘッダ（libssl-dev等）を
