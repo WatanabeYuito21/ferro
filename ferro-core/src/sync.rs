@@ -6,6 +6,7 @@ use rusqlite::Connection;
 use crate::db::accounts::{self, Account};
 use crate::db::messages::{self, NewMessage};
 use crate::db::now_unix;
+use crate::db::purged_uidls;
 use crate::mail::attachments;
 use crate::mail::parse::{make_preview, parse_full};
 use crate::maildir;
@@ -240,7 +241,13 @@ pub fn sync_account_with_limit(
         };
         let mut pending = Vec::new();
         for (msg_num, uidl) in server_uidls {
-            if !messages::exists_by_uidl(conn, account.id, &uidl)? {
+            // `exists_by_uidl`だけでは、保持期間切れで完全削除済み（DB行は消えたが
+            // DELEを送らないためサーバーにはまだ残っている）のメッセージまで
+            // 「未取得」と誤判定し、際限なく再取得してしまう（`purged_uidls`の
+            // ドキュメント参照）。
+            if !messages::exists_by_uidl(conn, account.id, &uidl)?
+                && !purged_uidls::is_purged(conn, account.id, &uidl)?
+            {
                 pending.push((msg_num, uidl));
             }
         }
@@ -367,7 +374,13 @@ fn store_fetched_message(
     // （DB側は`insert_new`のINSERT OR IGNOREで重複排除できていたが、
     // ディスクI/Oは防げていなかった。実際にユーザーがファンの唸り/大量の
     // I/Oバイト数として踏んだ）。
-    if messages::exists_by_uidl(conn, account_id, uidl)? {
+    // `uidl_supported=false`のフォールバック経路（`fetch_and_store_by_hash`）は
+    // 毎回全件RETRし直すため、保持期間切れで完全削除済みのメッセージも
+    // 内容ハッシュが一致すれば再度ここに来る。`purged_uidls`もチェックしないと、
+    // 削除したはずのメッセージがMaildir/DBへ復活してしまう。
+    if messages::exists_by_uidl(conn, account_id, uidl)?
+        || purged_uidls::is_purged(conn, account_id, uidl)?
+    {
         return Ok(None);
     }
     maildir::store(maildir_base, account_id, uidl, raw)?;
