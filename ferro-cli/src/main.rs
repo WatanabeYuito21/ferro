@@ -6,9 +6,12 @@ use clap::{Parser, Subcommand};
 use ferro_core::account_config::{self, AccountConfig};
 use ferro_core::account_setup;
 use ferro_core::db::accounts;
+use ferro_core::db::labels;
 use ferro_core::db::messages;
+use ferro_core::label_rules::LabelRule;
+use ferro_core::message_filter::MessageFilter;
 use ferro_core::search::SearchIndex;
-use ferro_core::{credentials, paths, reindex, sync};
+use ferro_core::{credentials, label_rules, paths, reindex, sync};
 
 #[derive(Parser)]
 #[command(name = "ferro", version, about = "1000万件規模でも高速に動くPOP3メーラー(CLI)")]
@@ -78,6 +81,48 @@ enum Command {
         #[arg(long)]
         restore: bool,
     },
+    /// ラベル管理（作成/削除はGUI限定。ここでは一覧表示のみ）
+    Label {
+        #[command(subcommand)]
+        action: LabelAction,
+    },
+    /// 受信時の自動ラベル付けルール（`label_rules.toml`）
+    LabelRule {
+        #[command(subcommand)]
+        action: LabelRuleAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LabelAction {
+    /// ラベル一覧を表示する（付与件数付き）
+    List,
+}
+
+#[derive(Subcommand)]
+enum LabelRuleAction {
+    /// ルールを1件追加する。From/Subject/Bodyは省略可能（すべて省略した条件は
+    /// 何にもマッチしない）。指定した条件はAND（すべて満たした場合のみ付与）
+    Add {
+        /// 付与するラベルの名前（既存のラベル名。`ferro label list`で確認できる）
+        #[arg(long)]
+        label: String,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        body: Option<String>,
+        /// true=添付ありのみ、false=添付なしのみ、省略時は問わない
+        #[arg(long)]
+        has_attachment: Option<bool>,
+    },
+    /// ルール一覧を表示する
+    List,
+    /// ルールを削除する（`List`で表示される番号を指定）
+    Remove { index: usize },
+    /// 既存の全メッセージへ遡ってルールを適用する（「今すぐ適用」に相当）
+    Apply,
 }
 
 #[derive(Subcommand)]
@@ -146,8 +191,55 @@ fn main() -> anyhow::Result<()> {
             ferro_core::message_actions::set_deleted(&conn, &search_index, message_id, !restore)?;
             println!("message #{message_id} {}.", if restore { "restored" } else { "deleted" });
         }
+        Command::Label { action } => run_label_command(&conn, action)?,
+        Command::LabelRule { action } => run_label_rule_command(&conn, action)?,
     }
 
+    Ok(())
+}
+
+fn run_label_command(conn: &ferro_core::db::Connection, action: LabelAction) -> anyhow::Result<()> {
+    match action {
+        LabelAction::List => {
+            for label in labels::list_with_counts(conn)? {
+                println!("{:<20} {:<10} {}件", label.label.name, label.label.color, label.count);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_label_rule_command(conn: &ferro_core::db::Connection, action: LabelRuleAction) -> anyhow::Result<()> {
+    let config_path = paths::label_rules_config_path();
+    match action {
+        LabelRuleAction::Add { label, from, subject, body, has_attachment } => {
+            let filter = MessageFilter {
+                from_contains: from,
+                subject_contains: subject,
+                body_contains: body,
+                has_attachment,
+            };
+            if filter.is_empty() {
+                anyhow::bail!("at least one of --from/--subject/--body/--has-attachment is required");
+            }
+            label_rules::add(&config_path, LabelRule { label_name: label, filter })?;
+            println!("rule added.");
+        }
+        LabelRuleAction::List => {
+            for (i, rule) in label_rules::load(&config_path)?.rules.iter().enumerate() {
+                println!("[{i}] label={:?} {:?}", rule.label_name, rule.filter);
+            }
+        }
+        LabelRuleAction::Remove { index } => {
+            label_rules::remove(&config_path, index)?;
+            println!("rule #{index} removed.");
+        }
+        LabelRuleAction::Apply => {
+            let rules = label_rules::load(&config_path)?;
+            let applied = label_rules::apply_all(conn, &paths::maildir_dir(), &rules)?;
+            println!("{applied} label(s) applied to existing mail.");
+        }
+    }
     Ok(())
 }
 
@@ -235,6 +327,7 @@ fn run_sync_command(
         )
     })?;
 
+    let label_rules = label_rules::load_or_default(&paths::label_rules_config_path());
     let summary = sync::sync_account_with_limit(
         conn,
         &paths::maildir_dir(),
@@ -243,6 +336,7 @@ fn run_sync_command(
         allow_plaintext,
         limit,
         search_index,
+        &label_rules,
         |fetched, total| {
             print!("\rfetched {fetched}/{total}...");
             let _ = std::io::stdout().flush();

@@ -9,7 +9,9 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::db::accounts::{self, NewAccount};
+use crate::db::labels;
 use crate::db::{messages, open_in_memory};
+use crate::message_filter::MessageFilter;
 use crate::search::SearchIndex;
 
 fn make_search_index() -> SearchIndex {
@@ -151,6 +153,7 @@ fn sync_respects_limit_and_resumes_next_call() {
         true,
         Some(2),
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -183,6 +186,7 @@ fn sync_respects_limit_and_resumes_next_call() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -225,6 +229,7 @@ fn sync_is_idempotent_when_nothing_new() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -236,6 +241,7 @@ fn sync_is_idempotent_when_nothing_new() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -280,6 +286,7 @@ fn sync_reconnects_after_mid_pipeline_disconnect() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -318,6 +325,7 @@ fn sync_reconnects_after_disconnect_during_initial_handshake() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -354,6 +362,7 @@ fn sync_gives_up_after_exhausting_reconnects_during_initial_handshake() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     );
 
@@ -459,6 +468,7 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -497,6 +507,7 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -542,6 +553,7 @@ fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -559,6 +571,7 @@ fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -605,6 +618,7 @@ fn sync_does_not_refetch_a_uidl_that_was_already_purged_for_retention() {
         true,
         None,
         &search_index,
+        &LabelRulesFile::default(),
         |_, _| {},
     )
     .unwrap();
@@ -629,4 +643,59 @@ fn sync_does_not_refetch_a_uidl_that_was_already_purged_for_retention() {
             .all(|m| m.uidl != "u1"),
         "the purged message must not be resurrected in the db"
     );
+}
+
+/// 受信時の自動ラベル付け(`label_rules`): syncで新着メッセージを取り込んだその場で、
+/// ルールに合致すればラベルが自動的に付くことを確認する。
+#[test]
+fn sync_applies_label_rules_to_newly_fetched_messages() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+    let label_id = labels::insert(&conn, "invoices", "#C08A2E").unwrap();
+
+    let fake_messages = vec![
+        FakeMessage {
+            uidl: "u1",
+            raw: b"Subject: Invoice #9012\r\n\r\nbody1",
+        },
+        FakeMessage {
+            uidl: "u2",
+            raw: b"Subject: unrelated\r\n\r\nbody2",
+        },
+    ];
+    let port = spawn_server(fake_messages);
+    let account = make_account(&conn, port);
+
+    let rules = LabelRulesFile {
+        rules: vec![crate::label_rules::LabelRule {
+            label_name: "invoices".to_string(),
+            filter: MessageFilter {
+                subject_contains: Some("invoice".to_string()),
+                ..Default::default()
+            },
+        }],
+    };
+
+    sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        &rules,
+        |_, _| {},
+    )
+    .unwrap();
+
+    let stored = messages::list_recent(&conn, Some(account.id), None, 10).unwrap();
+    let matching = stored.iter().find(|m| m.uidl == "u1").unwrap();
+    let unrelated = stored.iter().find(|m| m.uidl == "u2").unwrap();
+
+    let matching_labels = labels::for_message(&conn, matching.id).unwrap();
+    assert_eq!(matching_labels.len(), 1);
+    assert_eq!(matching_labels[0].id, label_id);
+    assert!(labels::for_message(&conn, unrelated.id).unwrap().is_empty());
 }

@@ -65,6 +65,12 @@
   let colorRules = []
   let colorRulesConfigPath = ''
 
+  // 受信時に自動でラベルを付与するルール(label_rules.toml)。設定画面でのみ使うが、
+  // color_rulesと同じくApp.svelte側で状態を持つ（invoke呼び出しをApp.svelteに
+  // 集約する既存の方針に揃えるため）。
+  let labelRules = []
+  let labelRulesConfigPath = ''
+
   async function refreshAccounts() {
     accounts = await invoke('list_accounts')
   }
@@ -153,6 +159,33 @@
     colorRules = await invoke('remove_color_rule', { index })
   }
 
+  async function refreshLabelRules() {
+    labelRules = await invoke('get_label_rules')
+  }
+
+  async function addLabelRule({ labelName, fromContains, subjectContains, bodyContains, hasAttachment }) {
+    labelRules = await invoke('add_label_rule', {
+      labelName,
+      fromContains,
+      subjectContains,
+      bodyContains,
+      hasAttachment,
+    })
+  }
+
+  async function removeLabelRule(index) {
+    labelRules = await invoke('remove_label_rule', { index })
+  }
+
+  // 既存の全メッセージへ遡ってルールを適用する（「今すぐ適用」ボタン）。ラベル付与の
+  // 結果を反映するため、メッセージ一覧・フォルダ件数を作り直す
+  // （`handleMessageChanged`と同じ理由）。
+  async function applyLabelRulesNow() {
+    const applied = await invoke('apply_label_rules_now')
+    handleMessageChanged()
+    return applied
+  }
+
   let unlistenBackgroundSync
   let unlistenSyncProgress
   let unlistenNavigate
@@ -163,9 +196,16 @@
       await refreshAccounts()
       accountsConfigPath = await invoke('accounts_config_path')
       colorRulesConfigPath = await invoke('color_rules_config_path')
+      labelRulesConfigPath = await invoke('label_rules_config_path')
       logFilePath = await invoke('log_file_path')
       appVersion = await invoke('app_version')
-      await Promise.all([refreshFolderCounts(), refreshLabels(), refreshSettings(), refreshColorRules()])
+      await Promise.all([
+        refreshFolderCounts(),
+        refreshLabels(),
+        refreshSettings(),
+        refreshColorRules(),
+        refreshLabelRules(),
+      ])
     } catch (e) {
       error = String(e)
     }
@@ -351,6 +391,13 @@
           onAddColorRule={addColorRule}
           onRemoveColorRule={removeColorRule}
           onReloadColorRules={refreshColorRules}
+          {labels}
+          {labelRules}
+          {labelRulesConfigPath}
+          onAddLabelRule={addLabelRule}
+          onRemoveLabelRule={removeLabelRule}
+          onReloadLabelRules={refreshLabelRules}
+          onApplyLabelRulesNow={applyLabelRulesNow}
           {logFilePath}
           {appVersion}
           onBack={() => {

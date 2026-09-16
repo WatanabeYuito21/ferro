@@ -33,6 +33,10 @@
   済みのフォントから選択可能）、文字サイズ）
 - 件名/差出人/本文プレビューに特定の文字列を含むメッセージを一覧上で色分けする色分けルール
   （設定画面から追加/削除でき、`color_rules.toml`を直接編集して反映することもできる）
+- 差出人/件名/本文への部分文字列一致・添付ファイルの有無を条件に、受信時に自動でラベルを
+  付与するルール（GUI設定画面・CLI`ferro label-rule`の両方で追加/削除でき、
+  `label_rules.toml`を直接編集して反映することもできる。既存の受信済みメールにも
+  遡って適用する「今すぐ適用」も用意）
 - メールの保持日数を設定でき、期限切れメールを6時間ごとに（または設定画面の「今すぐ整理する」で
   即座に）ローカルから完全に削除する。既定は無期限（自動削除しない）で、スター付きメールは
   保持日数に関わらず削除されない
@@ -109,6 +113,15 @@ ferro delete <message_id>
 
 # 全メッセージから検索インデックスを作り直す
 ferro reindex
+
+# ラベル一覧（作成/削除はGUI限定）
+ferro label list
+
+# 受信時の自動ラベル付けルール
+ferro label-rule add --label 領収書 --subject 領収書 --has-attachment true
+ferro label-rule list
+ferro label-rule remove <index>
+ferro label-rule apply   # 既存の受信済みメールにも遡って適用する
 ```
 
 `ferro --help` / `ferro <subcommand> --help` で全コマンドとオプションを確認できます。
@@ -183,6 +196,22 @@ use_tls = true
 [[rule]]
 pattern = "critical"
 color = "#b00020"
+```
+
+### `label_rules.toml`（受信時の自動ラベル付けルール）
+
+差出人/件名/本文への部分文字列一致・添付ファイルの有無を条件に、受信時に自動でラベルを
+付与するルールです。指定した条件はすべて満たした場合にのみ付与されます（AND。
+「いずれか」を表したい場合は同じラベルを指すルールを複数書きます）。`label_name`は
+既存のラベル名（`labels.name`）を指し、ラベルが削除/リネームされて解決できなくなった
+ルールは静かに無視されます。GUIの設定画面・`ferro label-rule`の両方から追加/削除でき、
+直接編集して反映することもできます。
+
+```toml
+[[rule]]
+label_name = "領収書"
+subject_contains = "領収書"
+has_attachment = true
 ```
 
 ### `settings.toml`（表示・動作設定）

@@ -10,8 +10,10 @@ use ferro_core::db::accounts::Account;
 use ferro_core::db::labels::Label;
 use ferro_core::db::messages::{Folder, Message};
 use ferro_core::db::{self, Connection};
+use ferro_core::label_rules::{self, LabelRule};
 use ferro_core::mail::attachments::{self, AttachmentInfo};
 use ferro_core::mail::parse::extract_plain_text_body;
+use ferro_core::message_filter::MessageFilter;
 use ferro_core::search::SearchIndex;
 use ferro_core::settings::Settings;
 use ferro_core::sync::SyncSummary;
@@ -666,6 +668,59 @@ fn color_rules_config_path() -> String {
     paths::color_rules_config_path().display().to_string()
 }
 
+/// 受信時の自動ラベル付けルール(`label_rules.toml`)を読み込む
+/// （`get_color_rules`と同じ理由。実際の判定は`ferro_core::label_rules`が行う）。
+#[tauri::command]
+fn get_label_rules() -> Result<Vec<LabelRule>, String> {
+    label_rules::load(&paths::label_rules_config_path())
+        .map(|file| file.rules)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_label_rule(
+    label_name: String,
+    from_contains: Option<String>,
+    subject_contains: Option<String>,
+    body_contains: Option<String>,
+    has_attachment: Option<bool>,
+) -> Result<Vec<LabelRule>, String> {
+    let filter = MessageFilter { from_contains, subject_contains, body_contains, has_attachment };
+    if filter.is_empty() {
+        return Err("From/件名/本文/添付有無のいずれか1つ以上を指定してください".to_string());
+    }
+    label_rules::add(&paths::label_rules_config_path(), LabelRule { label_name, filter })
+        .map(|file| file.rules)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_label_rule(index: usize) -> Result<Vec<LabelRule>, String> {
+    label_rules::remove(&paths::label_rules_config_path(), index)
+        .map(|file| file.rules)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn label_rules_config_path() -> String {
+    paths::label_rules_config_path().display().to_string()
+}
+
+/// 既存の全メッセージへ遡ってラベルルールを適用する（「今すぐ適用」ボタン）。
+/// `purge_expired_messages`と同じ理由で`spawn_blocking`に逃がす（1000万件規模だと
+/// 数秒〜数十秒かかりうる重い処理のため）。
+#[tauri::command]
+async fn apply_label_rules_now(app: AppHandle) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        let rules = label_rules::load(&paths::label_rules_config_path()).map_err(|e| e.to_string())?;
+        label_rules::apply_all(&conn, &paths::maildir_dir(), &rules).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// OSにインストールされているフォントのファミリー名一覧（重複除去・アルファベット順）。
 /// 設定画面の「フォント」プルダウンをこの一覧から選ばせるために使う
 /// （`ferro_core::db::settings::Settings::font_family`は固定候補ではなく任意の
@@ -709,6 +764,7 @@ async fn sync_account(
             )
         })?;
 
+        let label_rules = label_rules::load_or_default(&paths::label_rules_config_path());
         sync::sync_account_with_limit(
             &conn,
             &paths::maildir_dir(),
@@ -717,6 +773,7 @@ async fn sync_account(
             allow_plaintext,
             limit,
             &state.search_index,
+            &label_rules,
             |fetched, total| {
                 let _ = app.emit("sync-progress", SyncProgressEvent { account_id, fetched, total });
             },
@@ -996,6 +1053,7 @@ fn run_background_sync_once(app_handle: &AppHandle) {
             Err(_) => return,
         }
     };
+    let label_rules = label_rules::load_or_default(&paths::label_rules_config_path());
 
     for account in accounts {
         let event = match credentials::get_password(account.id) {
@@ -1017,6 +1075,7 @@ fn run_background_sync_once(app_handle: &AppHandle) {
                     !account.use_tls,
                     Some(BACKGROUND_SYNC_LIMIT),
                     &state.search_index,
+                    &label_rules,
                     |fetched, total| {
                         let _ = app_handle.emit(
                             "sync-progress",
@@ -1171,6 +1230,11 @@ pub fn run() {
             add_color_rule,
             remove_color_rule,
             color_rules_config_path,
+            get_label_rules,
+            add_label_rule,
+            remove_label_rule,
+            label_rules_config_path,
+            apply_label_rules_now,
             list_installed_fonts
         ])
         .run(tauri::generate_context!())

@@ -6,6 +6,7 @@
   import { openPath } from '@tauri-apps/plugin-opener'
   import AccountsView from './AccountsView.svelte'
   import ColorRulesView from './ColorRulesView.svelte'
+  import LabelRulesView from './LabelRulesView.svelte'
   import { applyAppearance, THEME_OPTIONS, ACCENT_COLOR_OPTIONS, FONT_SIZE_OPTIONS } from './appearance.js'
 
   let {
@@ -24,6 +25,13 @@
     onAddColorRule = async () => {},
     onRemoveColorRule = async () => {},
     onReloadColorRules = async () => {},
+    labels = [],
+    labelRules = [],
+    labelRulesConfigPath = '',
+    onAddLabelRule = async () => {},
+    onRemoveLabelRule = async () => {},
+    onReloadLabelRules = async () => {},
+    onApplyLabelRulesNow = async () => {},
     logFilePath = '',
     appVersion = '',
   } = $props()
@@ -410,6 +418,17 @@
       onAdd={onAddColorRule}
       onRemove={onRemoveColorRule}
       onReload={onReloadColorRules}
+    />
+
+    <h2 class="section-title">自動ラベル付けルール</h2>
+    <LabelRulesView
+      {labels}
+      rules={labelRules}
+      configPath={labelRulesConfigPath}
+      onAdd={onAddLabelRule}
+      onRemove={onRemoveLabelRule}
+      onReload={onReloadLabelRules}
+      onApplyNow={onApplyLabelRulesNow}
     />
   {/if}
 </div>
