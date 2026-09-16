@@ -1569,7 +1569,7 @@ dependencies = [
 
 [[package]]
 name = "ferro-cli"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "clap",
@@ -1579,9 +1579,10 @@ dependencies = [
 
 [[package]]
 name = "ferro-core"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "dirs",
+ "encoding_rs",
  "keyring",
  "mail-parser",
  "native-tls",
@@ -1595,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "ferro-desktop"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "ferro-core",
  "font-kit",
@@ -1609,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "ferro-tui"
-version = "0.0.11"
+version = "0.0.12"
 dependencies = [
  "anyhow",
  "crossterm",

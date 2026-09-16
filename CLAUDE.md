@@ -335,6 +335,29 @@
 - **`mail-parser`の`full_encoding`フィーチャ**: cargo addで依存クレート名と同名のダミーフィーチャが
   黙って生成されることがある。「encoding_rs」のような名前を指定しても実際には何も有効化されず、
   日本語Shift_JIS件名などが文字化けする原因になりうる。フィーチャ名が実際に効いているかは要確認。
+  （実際に`Cargo.lock`で`encoding_rs`が解決されていることを確認済み。有効化自体はできていた。）
+  **`full_encoding`を有効にしても直らない文字化けが別途実在する（v0.0.12で対策）**:
+  `mail-parser`のヘッダー解析（`parsers/fields/unstructured.rs`の`add_token`、`fields/address.rs`の
+  表示名パースも同様）は、RFC2047の`=?charset?B/Q?...?=`エンコード済みの部分だけを
+  `full_encoding`のcharsetテーブルで復号する。エンコードされていない生のヘッダーバイト列は
+  `String::from_utf8_lossy`で無条件にUTF-8として変換されるため、**RFC2047で包まず生の
+  Shift_JIS/EUC-JP/ISO-2022-JPバイト列をヘッダーに直接書いてくる（技術的には仕様違反だが、
+  古い日本語のcron/監視アラート系メールサーバーで実在する）送信元だと、件名が
+  U+FFFD混じりに文字化けする**（実際に自社のセキュリティ監視アラートメールの件名
+  「[T-TOMY01]で悪意のあるSQLもしくは決済系テンプレート等の更新を検知」で踏んだ。
+  Shift_JISの2バイト文字はしばしば2バイト目がASCII印字可能域に落ちるため、
+  「1バイト目がU+FFFDに、2バイト目がそのままASCII文字として残る」という特徴的な
+  壊れ方をする）。`mail-parser`は生ヘッダーの元バイト列を取り出すAPIを公開していない
+  （一度lossy変換された時点で情報が失われ復元不能）ため、`ferro_core::mail::parse`側で
+  `raw_header_value`により生メールバイト列から該当ヘッダー（現状はSubjectのみ。
+  折り返し継続行のunfoldingにも対応）を独自に抜き出し直し、`recover_mojibake_header`が
+  Shift_JIS→EUC-JP→ISO-2022-JPの順に`encoding_rs`で再デコードを試みて、変換エラーが
+  無くU+FFFDも残らない最初の結果を採用する。`mail-parser`の結果にU+FFFDが含まれない
+  （＝正常にデコードできている）大多数のケースでは一切関与しないため、既存の
+  ASCII/UTF-8/RFC2047な件名を壊す心配は無い。どのcharsetでも再デコードに失敗した
+  場合はmail-parserの元の結果（文字化けしたまま）を諦めてそのまま使う（悪化はさせない）。
+  From表示名（`address.rs`側）にも同種の根本原因があり得るが、実際に報告されたのは
+  件名のみだったため今回はSubjectに限定して対応した。
 - **`keyring`crate（Linux/secret-service）**: WSL等でSecret Service D-Busサービスが動いていないと
   `org.freedesktop.secrets was not provided`のようなエラーになる。また`default`という名前の
   コレクションエイリアスが未設定だと保存時に`no result found`になりうる（通常はログイン時にPAM経由で
