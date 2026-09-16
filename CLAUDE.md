@@ -66,6 +66,23 @@
   永久に手が届かなくなる、という検索キャッチアップで踏んだのと同じ罠を
   避けるため、`purge_expired_batch`も同じ「バッチ全体失敗→1件ずつ
   フォールバック」の設計にしてある。
+  **重大なバグ（v0.0.10で修正）**: `purge_expired_batch`はDB行・Maildir・
+  検索インデックスからは消すが、POP3サーバー側にはDELEを送らない設計
+  （Ferroは受信専用で、`dele`コマンド自体は`pop3::client`に実装済みだが
+  同期経路からは一度も呼んでいない）のため、消したはずのメールがサーバーには
+  まだ残っている。これに気づかず`messages`テーブルの行だけを消していたため、
+  「今すぐ整理する」実行直後にsyncすると、UIDL差分計算（`messages::exists_by_uidl`）が
+  「DBに無い＝未取得の新着」と誤判定し、たった今消したはずのメールを毎回
+  再取得しては次の保持期間クリーンアップでまた消す、という無駄な往復が
+  発生していた（「整理する実行後Syncすると件数が多すぎる」として実際に踏んだ）。
+  `purged_uidls`テーブル（migration 0007。account_id+uidlの墓標。実データを
+  持たないためaccounts.idへの外部キーは`ON DELETE CASCADE`を付けている。
+  `messages`テーブルに意図的にCASCADEを付けていないのとは事情が異なる）を
+  追加し、`purge_expired_batch`がDB行を消すのと同時にそのuidlを記録するように
+  した。syncの新着判定（通常のUIDL差分経路の`pending`計算、UIDL非対応
+  フォールバック経路の`store_fetched_message`の両方）は`messages::exists_by_uidl`に
+  加えて`purged_uidls::is_purged`もチェックし、過去に保持期間切れで消したuidlは
+  二度と新着扱いしない。
 - **設定ファイルへの移行**（`ferro_core::settings`、v0.0.7）: 上記のUI設定は
   当初SQLiteの`settings`テーブル（key/value）に保存していたが、
   「設定ファイルになっていない他の設定も設定ファイルに起こしてほしい」

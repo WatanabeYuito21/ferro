@@ -569,3 +569,64 @@ fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
         "the already-known message must not be rewritten to disk on the second sync"
     );
 }
+
+/// 「今すぐ整理する」実行後のsyncでSync数が異常に多い、として実際に踏んだ回帰
+/// テスト: 保持期間切れで完全削除した(`message_actions::purge_expired_batch`と
+/// 同じ手順で)uidlは、DELEを送っていないためサーバーにはまだ残っているが、
+/// `purged_uidls`に記録されていればUIDL差分方式が新着として再取得しないこと。
+#[test]
+fn sync_does_not_refetch_a_uidl_that_was_already_purged_for_retention() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+
+    let fake_messages = vec![
+        FakeMessage {
+            uidl: "u1",
+            raw: b"Subject: one\r\n\r\nbody1",
+        },
+        FakeMessage {
+            uidl: "u2",
+            raw: b"Subject: two\r\n\r\nbody2",
+        },
+    ];
+    let port = spawn_server(fake_messages);
+    let account = make_account(&conn, port);
+
+    // u1はサーバーにまだ残っているが、保持期間切れで完全削除済み(墓標のみ残る)
+    // という状況を再現する。
+    crate::db::purged_uidls::mark_purged(&conn, account.id, "u1").unwrap();
+
+    let summary = sync_account_with_limit(
+        &conn,
+        maildir_base.path(),
+        &account,
+        "pw",
+        true,
+        None,
+        &search_index,
+        |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary,
+        SyncSummary {
+            fetched: 1,
+            remaining: 0,
+            ended_early: false
+        }
+    );
+    assert!(
+        !maildir::exists(maildir_base.path(), account.id, "u1"),
+        "the purged message must not be resurrected on disk"
+    );
+    assert!(maildir::exists(maildir_base.path(), account.id, "u2"));
+    assert!(
+        messages::list_recent(&conn, Some(account.id), None, 10)
+            .unwrap()
+            .iter()
+            .all(|m| m.uidl != "u1"),
+        "the purged message must not be resurrected in the db"
+    );
+}
