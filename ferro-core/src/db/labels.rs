@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{Connection, Row, ToSql, params};
+use rusqlite::{Connection, OptionalExtension, Row, ToSql, params};
 
 use super::now_unix;
 
@@ -51,6 +51,17 @@ pub fn list_with_counts(conn: &Connection) -> rusqlite::Result<Vec<LabelWithCoun
         })
     })?
     .collect()
+}
+
+/// 名前で1件引く。`labels.name`はUNIQUE制約済み（migration 0003）なので、
+/// `label_rules`がTOML上のラベル名（自然キー）からidを解決するのに使う。
+pub fn find_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<Label>> {
+    conn.query_row(
+        "SELECT id, name, color FROM labels WHERE name = ?1",
+        params![name],
+        |row| row_to_label(row, 0),
+    )
+    .optional()
 }
 
 /// メッセージへのラベル付与/解除。
@@ -180,6 +191,16 @@ mod tests {
 
         delete(&conn, id).unwrap();
         assert!(list_with_counts(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn find_by_name_looks_up_by_the_unique_name() {
+        let conn = open_in_memory().unwrap();
+        let id = insert(&conn, "領収書", "#C08A2E").unwrap();
+
+        let found = find_by_name(&conn, "領収書").unwrap().unwrap();
+        assert_eq!(found.id, id);
+        assert!(find_by_name(&conn, "存在しない").unwrap().is_none());
     }
 
     #[test]

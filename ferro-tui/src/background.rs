@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ferro_core::db::{self, Connection};
 use ferro_core::search::SearchIndex;
 use ferro_core::sync::SyncSummary;
-use ferro_core::{credentials, paths, reindex, settings, sync};
+use ferro_core::{credentials, label_rules, paths, reindex, settings, sync};
 
 /// バックグラウンドスレッドからメインループへの通知。
 pub enum BackgroundEvent {
@@ -95,6 +95,7 @@ pub fn sync_all_accounts_once(
             Err(_) => return,
         }
     };
+    let label_rules = label_rules::load_or_default(&paths::label_rules_config_path());
 
     for account in accounts {
         let account_id = account.id;
@@ -111,6 +112,7 @@ pub fn sync_all_accounts_once(
                 !account.use_tls,
                 Some(200),
                 search_index,
+                &label_rules,
                 |fetched, total| {
                     let _ = tx.send(BackgroundEvent::SyncProgress { account_id, fetched, total });
                 },
