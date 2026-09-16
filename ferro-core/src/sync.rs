@@ -7,6 +7,7 @@ use crate::db::accounts::{self, Account};
 use crate::db::messages::{self, NewMessage};
 use crate::db::now_unix;
 use crate::db::purged_uidls;
+use crate::label_rules::{self, LabelRulesFile};
 use crate::mail::attachments;
 use crate::mail::parse::{make_preview, parse_full};
 use crate::maildir;
@@ -56,6 +57,8 @@ pub enum SyncError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Search(#[from] SearchError),
+    #[error(transparent)]
+    LabelRules(#[from] label_rules::LabelRulesError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +90,7 @@ pub fn sync_account_with_limit(
     allow_plaintext: bool,
     limit: Option<u32>,
     search_index: &SearchIndex,
+    label_rules: &LabelRulesFile,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<SyncSummary, SyncError> {
     let mut total_fetched = 0u32;
@@ -161,6 +165,7 @@ pub fn sync_account_with_limit(
                 account.id,
                 &msg_nums,
                 search_index,
+                label_rules,
                 total_fetched,
                 target_total,
                 &mut on_progress,
@@ -269,6 +274,7 @@ pub fn sync_account_with_limit(
             account.id,
             &pending[..take],
             search_index,
+            label_rules,
             total_fetched,
             target_total,
             &mut on_progress,
@@ -364,6 +370,7 @@ fn store_fetched_message(
     account_id: i64,
     uidl: &str,
     raw: &[u8],
+    label_rules: &LabelRulesFile,
 ) -> Result<Option<PendingIndex>, SyncError> {
     // 既知のuidlならMaildirへの書き込み自体を丸ごとスキップする。
     // `fetch_and_store`（通常のUIDL差分経路）では呼び出し側が事前に
@@ -409,19 +416,32 @@ fn store_fetched_message(
         },
     )?;
 
-    Ok(new_id.map(|id| {
-        let from = format!(
-            "{} {}",
-            parsed.headers.from_name.as_deref().unwrap_or(""),
-            parsed.headers.from_addr.as_deref().unwrap_or("")
-        );
-        PendingIndex {
-            id,
-            subject: parsed.headers.subject.as_deref().unwrap_or("").to_string(),
-            from,
-            body: parsed.body.as_deref().unwrap_or("").to_string(),
-            date_header,
-        }
+    let Some(id) = new_id else {
+        return Ok(None);
+    };
+
+    let from = format!(
+        "{} {}",
+        parsed.headers.from_name.as_deref().unwrap_or(""),
+        parsed.headers.from_addr.as_deref().unwrap_or("")
+    );
+    let subject = parsed.headers.subject.as_deref().unwrap_or("");
+    let body = parsed.body.as_deref().unwrap_or("");
+
+    // 受信時の自動ラベル付け（`label_rules`のドキュメント参照）。バックフィル
+    // （`label_rules::apply_all`）と同じ完全一致ロジックで、この場で1件だけ判定する。
+    let matched_labels =
+        label_rules::matching_label_names(label_rules, subject, &from, body, attachment_count > 0);
+    if !matched_labels.is_empty() {
+        label_rules::apply_matching_labels(conn, id, &matched_labels)?;
+    }
+
+    Ok(Some(PendingIndex {
+        id,
+        subject: subject.to_string(),
+        from,
+        body: body.to_string(),
+        date_header,
     }))
 }
 
@@ -443,6 +463,7 @@ fn fetch_and_store(
     account_id: i64,
     items: &[(u32, String)],
     search_index: &SearchIndex,
+    label_rules: &LabelRulesFile,
     already_fetched: u32,
     target_total: u32,
     on_progress: &mut dyn FnMut(u32, u32),
@@ -473,7 +494,9 @@ fn fetch_and_store(
                 Err(e) => return Err(e.into()),
             };
 
-            if let Some(item) = store_fetched_message(&tx, maildir_base, account_id, uidl, &raw)? {
+            if let Some(item) =
+                store_fetched_message(&tx, maildir_base, account_id, uidl, &raw, label_rules)?
+            {
                 pending_index.push(item);
             }
             fetched += 1;
@@ -532,6 +555,7 @@ fn fetch_and_store_by_hash(
     account_id: i64,
     msg_nums: &[u32],
     search_index: &SearchIndex,
+    label_rules: &LabelRulesFile,
     already_fetched: u32,
     target_total: u32,
     on_progress: &mut dyn FnMut(u32, u32),
@@ -563,7 +587,9 @@ fn fetch_and_store_by_hash(
             };
 
             let uidl = content_uidl(&raw);
-            if let Some(item) = store_fetched_message(&tx, maildir_base, account_id, &uidl, &raw)? {
+            if let Some(item) =
+                store_fetched_message(&tx, maildir_base, account_id, &uidl, &raw, label_rules)?
+            {
                 pending_index.push(item);
                 new_count += 1;
             }

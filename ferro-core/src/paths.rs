@@ -47,3 +47,10 @@ pub fn log_path() -> PathBuf {
 pub fn settings_config_path() -> PathBuf {
     app_data_dir().join("settings.toml")
 }
+
+/// 受信時に自動でラベルを付与するルールを保持するTOMLファイル。`color_rules.toml`と
+/// 同じく、これが正の情報源（`label_rules::load`/`save`参照）でDBテーブルへの
+/// reconcileは無い。
+pub fn label_rules_config_path() -> PathBuf {
+    app_data_dir().join("label_rules.toml")
+}
