@@ -84,6 +84,18 @@
   フォールバック経路の`store_fetched_message`の両方）は`messages::exists_by_uidl`に
   加えて`purged_uidls::is_purged`もチェックし、過去に保持期間切れで消したuidlは
   二度と新着扱いしない。
+- **サーバー側メールの期間超過削除**（`Settings::server_delete_days`、v0.0.13）:
+  「サーバー側のメールが溜まりすぎる」という要望で追加。上記v0.0.10の記述にある
+  「同期経路からDELEを送らない」は、この設定が0（既定）の間だけ成り立つ。
+  `sync_account_with_limit`の`server_delete_before`（`Settings::server_delete_cutoff`が
+  unix秒で計算）がSomeのとき、UIDL差分経路でサーバーのUIDL一覧のうち
+  (a)ローカルに行とMaildirファイルがあり`date_header`が古いもの、
+  (b)`purged_uidls`の墓標があるもの（保持期間で消した古いメール）を同一セッションの
+  msg_numでDELEしてからQUITする。DELEはQUITで初めて確定するためQUIT失敗時は0件扱いにし
+  （切断されても次回syncが再試行するのでべき等）、取得対象(pending)が空でも削除とQUITは走る。
+  1セッション500件まで。**UIDL非対応のフォールバック経路は対象外**（RETR前にmsg_numと
+  uidl（内容ハッシュ）の対応が取れず、安全に特定できないため）。`retention_days`とは独立。
+  Dateヘッダーが古いメールは受信直後でも次回syncで削除対象になる（`date_header`基準）。
 - **受信時の自動ラベル付けルール**（`ferro_core::label_rules`/`message_filter`、v0.0.11）:
   「詳細検索機能を付けて、その条件に当てはまるものは受信時に自動でラベル付けできる
   ようにしたい」という要望を受けて追加した。差出人/件名/本文への部分文字列一致と

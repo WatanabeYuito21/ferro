@@ -271,6 +271,14 @@ fn render_settings_screen(f: &mut Frame, app: &App, area: Rect) {
                 "無期限".to_string()
             }
         )),
+        Line::from(format!(
+            "  サーバー側メールの削除: {}",
+            if app.settings.server_delete_days > 0 {
+                format!("{}日経過後", app.settings.server_delete_days)
+            } else {
+                "しない".to_string()
+            }
+        )),
         Line::from(""),
         Line::styled("色分けルール", Style::default().add_modifier(Modifier::BOLD)),
     ];
