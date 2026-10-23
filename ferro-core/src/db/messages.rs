@@ -79,6 +79,20 @@ pub fn exists_by_uidl(conn: &Connection, account_id: i64, uidl: &str) -> rusqlit
     .map(|found| found.is_some())
 }
 
+/// uidlに対応する保存済みメッセージの`date_header`。未取得ならNone。
+pub fn date_header_by_uidl(
+    conn: &Connection,
+    account_id: i64,
+    uidl: &str,
+) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT date_header FROM messages WHERE account_id = ?1 AND uidl = ?2",
+        params![account_id, uidl],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 pub fn set_read(conn: &Connection, id: i64, is_read: bool) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE messages SET is_read = ?1 WHERE id = ?2",

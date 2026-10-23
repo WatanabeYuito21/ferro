@@ -501,6 +501,7 @@ struct SettingsView {
     font_family: String,
     font_size: String,
     retention_days: i64,
+    server_delete_days: i64,
 }
 
 impl From<Settings> for SettingsView {
@@ -515,6 +516,7 @@ impl From<Settings> for SettingsView {
             font_family: s.font_family,
             font_size: s.font_size,
             retention_days: s.retention_days,
+            server_delete_days: s.server_delete_days,
         }
     }
 }
@@ -531,6 +533,7 @@ impl From<SettingsView> for Settings {
             font_family: s.font_family,
             font_size: s.font_size,
             retention_days: s.retention_days,
+            server_delete_days: s.server_delete_days,
         }
     }
 }
@@ -774,6 +777,7 @@ async fn sync_account(
             limit,
             &state.search_index,
             &label_rules,
+            settings::load_or_default(&paths::settings_config_path()).server_delete_cutoff(),
             |fetched, total| {
                 let _ = app.emit("sync-progress", SyncProgressEvent { account_id, fetched, total });
             },
@@ -1054,6 +1058,8 @@ fn run_background_sync_once(app_handle: &AppHandle) {
         }
     };
     let label_rules = label_rules::load_or_default(&paths::label_rules_config_path());
+    let server_delete_before =
+        settings::load_or_default(&paths::settings_config_path()).server_delete_cutoff();
 
     for account in accounts {
         let event = match credentials::get_password(account.id) {
@@ -1076,6 +1082,7 @@ fn run_background_sync_once(app_handle: &AppHandle) {
                     Some(BACKGROUND_SYNC_LIMIT),
                     &state.search_index,
                     &label_rules,
+                    server_delete_before,
                     |fetched, total| {
                         let _ = app_handle.emit(
                             "sync-progress",

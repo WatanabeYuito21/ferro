@@ -69,7 +69,13 @@ pub struct SyncSummary {
     pub remaining: u32,
     /// 再接続を試みても復旧できず、この呼び出しを打ち切ったかどうか。
     pub ended_early: bool,
+    /// サーバー側から削除（DELE＋QUITでコミット）できた件数。
+    /// `server_delete_before`がNoneのとき、およびUIDL非対応フォールバック経路では常に0。
+    pub server_deleted: u32,
 }
+
+/// 1セッションでDELEする最大件数。残りは次回のsyncで続きから削除する。
+const MAX_SERVER_DELETES_PER_SESSION: usize = 500;
 
 /// アカウントを同期する。UIDLの差分は全件計算するが、実際にRETRするのは
 /// `limit`件まで（Noneなら無制限）。パイプライン化したRETR中に実サーバーが
@@ -91,6 +97,7 @@ pub fn sync_account_with_limit(
     limit: Option<u32>,
     search_index: &SearchIndex,
     label_rules: &LabelRulesFile,
+    server_delete_before: Option<i64>,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<SyncSummary, SyncError> {
     let mut total_fetched = 0u32;
@@ -152,6 +159,7 @@ pub fn sync_account_with_limit(
                     fetched: total_fetched,
                     remaining: 0,
                     ended_early: false,
+                    server_deleted: 0,
                 });
             }
 
@@ -186,6 +194,7 @@ pub fn sync_account_with_limit(
                     fetched: total_fetched,
                     remaining,
                     ended_early: false,
+                    server_deleted: 0,
                 });
             }
 
@@ -205,6 +214,7 @@ pub fn sync_account_with_limit(
                     fetched: total_fetched,
                     remaining,
                     ended_early: true,
+                    server_deleted: 0,
                 });
             }
             std::thread::sleep(RECONNECT_BASE_DELAY * reconnects);
@@ -245,23 +255,40 @@ pub fn sync_account_with_limit(
             Err(e) => return Err(e.into()),
         };
         let mut pending = Vec::new();
+        // サーバーから消してよいmsg_num（このセッション内でのみ有効な番号）。
+        let mut deletable: Vec<u32> = Vec::new();
         for (msg_num, uidl) in server_uidls {
             // `exists_by_uidl`だけでは、保持期間切れで完全削除済み（DB行は消えたが
             // DELEを送らないためサーバーにはまだ残っている）のメッセージまで
             // 「未取得」と誤判定し、際限なく再取得してしまう（`purged_uidls`の
             // ドキュメント参照）。
-            if !messages::exists_by_uidl(conn, account.id, &uidl)?
-                && !purged_uidls::is_purged(conn, account.id, &uidl)?
-            {
+            let stored_date = messages::date_header_by_uidl(conn, account.id, &uidl)?;
+            let purged = stored_date.is_none() && purged_uidls::is_purged(conn, account.id, &uidl)?;
+            if stored_date.is_none() && !purged {
                 pending.push((msg_num, uidl));
+                continue;
+            }
+            let Some(cutoff) = server_delete_before else {
+                continue;
+            };
+            // ローカルに確実に残っている（DB行+Maildirファイル）古いメール、または
+            // 保持期間で消した（＝十分古い）メールだけをサーバーからも消す。
+            let old_and_safe = match stored_date {
+                Some(date) => date < cutoff && maildir::exists(maildir_base, account.id, &uidl),
+                None => true,
+            };
+            if old_and_safe && deletable.len() < MAX_SERVER_DELETES_PER_SESSION {
+                deletable.push(msg_num);
             }
         }
 
         if pending.is_empty() {
+            let server_deleted = commit_server_deletes(&mut client, &deletable, account);
             return Ok(SyncSummary {
                 fetched: total_fetched,
                 remaining: 0,
                 ended_early: false,
+                server_deleted,
             });
         }
 
@@ -279,7 +306,12 @@ pub fn sync_account_with_limit(
             target_total,
             &mut on_progress,
         )?;
-        let _ = client.quit();
+        // 切断済みのセッションではDELEもQUITも送れない（次回のsyncでやり直す）。
+        let server_deleted = if session_broken {
+            0
+        } else {
+            commit_server_deletes(&mut client, &deletable, account)
+        };
 
         total_fetched += fetched_now;
         if let Some(b) = budget.as_mut() {
@@ -292,6 +324,7 @@ pub fn sync_account_with_limit(
                 fetched: total_fetched,
                 remaining,
                 ended_early: false,
+                server_deleted,
             });
         }
 
@@ -311,9 +344,48 @@ pub fn sync_account_with_limit(
                 fetched: total_fetched,
                 remaining,
                 ended_early: true,
+                server_deleted: 0,
             });
         }
         std::thread::sleep(RECONNECT_BASE_DELAY * reconnects);
+    }
+}
+
+/// `nums`をDELEしてからQUITし、サーバー側で実際に削除がコミットされた件数を返す。
+/// POP3のDELEはQUITで初めて確定するため、QUITが成功しなければ0を返す。
+/// 失敗しても同期自体は成功扱いにする（削除はべき等で次回のsyncが再試行する）。
+fn commit_server_deletes(client: &mut Pop3Client, nums: &[u32], account: &Account) -> u32 {
+    let mut marked = 0u32;
+    for &num in nums {
+        match client.dele(num) {
+            Ok(()) => marked += 1,
+            Err(e) => {
+                crate::logging::log_line(&format!(
+                    "sync: DELE failed (account={:?} host={}:{}): {e}",
+                    account.name, account.host, account.port
+                ));
+                break;
+            }
+        }
+    }
+    match client.quit() {
+        Ok(()) if marked > 0 => {
+            crate::logging::log_line(&format!(
+                "sync: deleted {marked} expired message(s) from server (account={:?} host={}:{})",
+                account.name, account.host, account.port
+            ));
+            marked
+        }
+        Ok(()) => 0,
+        Err(e) => {
+            if marked > 0 {
+                crate::logging::log_line(&format!(
+                    "sync: QUIT failed, {marked} server-side delete(s) not committed (account={:?}): {e}",
+                    account.name
+                ));
+            }
+            0
+        }
     }
 }
 

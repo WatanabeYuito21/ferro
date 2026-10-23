@@ -53,6 +53,11 @@ pub struct Settings {
     /// （`message_actions::purge_expired_batch`参照。スター付きは例外的に
     /// 保持日数に関わらず対象外）。
     pub retention_days: i64,
+    /// サーバー側（POP3）に残っているメールを、`date_header`がこの日数より
+    /// 古くなったらDELEで削除する。0は「削除しない」（既定）。ローカルの
+    /// `retention_days`とは独立。ローカルに保存済みのメールだけが対象で、
+    /// UIDL非対応アカウント（内容ハッシュのフォールバック経路）は対象外。
+    pub server_delete_days: i64,
 }
 
 impl Default for Settings {
@@ -67,6 +72,7 @@ impl Default for Settings {
             font_family: "Noto Sans JP".to_string(),
             font_size: "medium".to_string(),
             retention_days: 0,
+            server_delete_days: 0,
         }
     }
 }
@@ -75,6 +81,12 @@ const VALID_THEMES: [&str; 3] = ["light", "dark", "system"];
 const VALID_FONT_SIZES: [&str; 3] = ["small", "medium", "large"];
 
 impl Settings {
+    /// `sync_account_with_limit`の`server_delete_before`に渡すunix秒カットオフ。
+    pub fn server_delete_cutoff(&self) -> Option<i64> {
+        (self.server_delete_days > 0)
+            .then(|| crate::db::now_unix() - self.server_delete_days * 24 * 60 * 60)
+    }
+
     /// TOMLとしては型が妥当でも意味的に不正な値（未知のtheme文字列、負の
     /// retention_days等）を安全な既定値へ補正する。手編集で壊れた値のせいで
     /// 意図せず大量削除が走ったり、フロント側が知らないtheme値を渡されたり
@@ -100,6 +112,9 @@ impl Settings {
         }
         if self.retention_days < 0 {
             self.retention_days = default.retention_days;
+        }
+        if self.server_delete_days < 0 {
+            self.server_delete_days = default.server_delete_days;
         }
     }
 }
@@ -223,6 +238,7 @@ mod tests {
             font_family: "monospace".to_string(),
             font_size: "large".to_string(),
             retention_days: 90,
+            server_delete_days: 30,
         };
         save(&path, &custom).unwrap();
         assert_eq!(load(&path).unwrap(), custom);
@@ -241,6 +257,17 @@ mod tests {
 
     /// 負の保持日数のせいで意図せず大量削除が走ることが無いよう、
     /// 既定の0(無期限)にフォールバックすることを確認する。
+    #[test]
+    fn negative_server_delete_days_falls_back_to_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "server_delete_days = -5
+").unwrap();
+        let s = load(&path).unwrap();
+        assert_eq!(s.server_delete_days, 0);
+        assert_eq!(s.server_delete_cutoff(), None);
+    }
+
     #[test]
     fn invalid_retention_days_falls_back_to_unlimited() {
         let dir = tempdir().unwrap();

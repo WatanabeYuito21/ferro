@@ -96,6 +96,8 @@ pub fn sync_all_accounts_once(
         }
     };
     let label_rules = label_rules::load_or_default(&paths::label_rules_config_path());
+    let server_delete_before =
+        settings::load_or_default(&paths::settings_config_path()).server_delete_cutoff();
 
     for account in accounts {
         let account_id = account.id;
@@ -113,6 +115,7 @@ pub fn sync_all_accounts_once(
                 Some(200),
                 search_index,
                 &label_rules,
+                server_delete_before,
                 |fetched, total| {
                     let _ = tx.send(BackgroundEvent::SyncProgress { account_id, fetched, total });
                 },

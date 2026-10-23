@@ -228,6 +228,9 @@ accent_color = "#3f6b5c"
 font_family = "Noto Sans JP"
 font_size = "medium"
 retention_days = 0
+# サーバー側(POP3)のメールを、この日数より古くなったら同期時にDELEで削除する。0は削除しない。
+# ローカルに保存済みのメールだけが対象（UIDL非対応アカウントは対象外）。
+server_delete_days = 0
 ```
 
 v0.0.6より前はSQLiteのDBに保存していましたが、他の設定ファイルと一貫させるためファイルベースに移行しました。既存ユーザーの設定は初回起動時に自動でこのファイルへ引き継がれます。

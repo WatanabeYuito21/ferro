@@ -161,6 +161,21 @@
     }
   }
 
+  // 0 = サーバー側のメールを削除しない（既定）。
+  async function updateServerDeleteDays(days) {
+    if (!settings || saving) return
+    const next = { ...settings, server_delete_days: days }
+    settings = next
+    saving = true
+    try {
+      await invoke('update_settings', { settings: next })
+    } catch (e) {
+      error = String(e)
+    } finally {
+      saving = false
+    }
+  }
+
   let purging = $state(false)
   let purgeStatus = $state('')
 
@@ -374,6 +389,24 @@
           step="1"
           value={settings.retention_days}
           onchange={(e) => updateRetentionDays(Math.max(0, Number(e.target.value) || 0))}
+        />
+      </div>
+      <div class="row">
+        <div class="text">
+          <div class="title">サーバー側メールの削除（日数）</div>
+          <div class="desc">
+            ローカルに保存済みで、指定した日数より古いメールを同期時にPOP3サーバーからも削除します
+            （ローカルのメールは残ります）。UIDL非対応のサーバーのアカウントは対象外です。
+            0は削除しません。
+          </div>
+        </div>
+        <input
+          type="number"
+          class="interval-select retention-input"
+          min="0"
+          step="1"
+          value={settings.server_delete_days}
+          onchange={(e) => updateServerDeleteDays(Math.max(0, Number(e.target.value) || 0))}
         />
       </div>
       <div class="row">
