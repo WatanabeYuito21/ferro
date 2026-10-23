@@ -154,6 +154,7 @@ fn sync_respects_limit_and_resumes_next_call() {
         Some(2),
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -162,7 +163,8 @@ fn sync_respects_limit_and_resumes_next_call() {
         SyncSummary {
             fetched: 2,
             remaining: 1,
-            ended_early: false
+            ended_early: false,
+            server_deleted: 0,
         }
     );
     assert!(maildir::exists(maildir_base.path(), account.id, "u1"));
@@ -187,6 +189,7 @@ fn sync_respects_limit_and_resumes_next_call() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -195,7 +198,8 @@ fn sync_respects_limit_and_resumes_next_call() {
         SyncSummary {
             fetched: 1,
             remaining: 0,
-            ended_early: false
+            ended_early: false,
+            server_deleted: 0,
         }
     );
     assert!(maildir::exists(maildir_base.path(), account.id, "u3"));
@@ -230,6 +234,7 @@ fn sync_is_idempotent_when_nothing_new() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -242,6 +247,7 @@ fn sync_is_idempotent_when_nothing_new() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -250,7 +256,8 @@ fn sync_is_idempotent_when_nothing_new() {
         SyncSummary {
             fetched: 0,
             remaining: 0,
-            ended_early: false
+            ended_early: false,
+            server_deleted: 0,
         }
     );
 }
@@ -287,6 +294,7 @@ fn sync_reconnects_after_mid_pipeline_disconnect() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -326,6 +334,7 @@ fn sync_reconnects_after_disconnect_during_initial_handshake() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -335,7 +344,8 @@ fn sync_reconnects_after_disconnect_during_initial_handshake() {
         SyncSummary {
             fetched: 1,
             remaining: 0,
-            ended_early: false
+            ended_early: false,
+            server_deleted: 0,
         }
     );
     assert!(maildir::exists(maildir_base.path(), account.id, "u1"));
@@ -363,6 +373,7 @@ fn sync_gives_up_after_exhausting_reconnects_during_initial_handshake() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     );
 
@@ -469,6 +480,7 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -478,7 +490,8 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
         SyncSummary {
             fetched: 2,
             remaining: 0,
-            ended_early: false
+            ended_early: false,
+            server_deleted: 0,
         }
     );
     assert_eq!(
@@ -508,6 +521,7 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -516,7 +530,8 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
         SyncSummary {
             fetched: 0,
             remaining: 0,
-            ended_early: false
+            ended_early: false,
+            server_deleted: 0,
         }
     );
     assert_eq!(
@@ -554,6 +569,7 @@ fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -572,6 +588,7 @@ fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -619,6 +636,7 @@ fn sync_does_not_refetch_a_uidl_that_was_already_purged_for_retention() {
         None,
         &search_index,
         &LabelRulesFile::default(),
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -628,7 +646,8 @@ fn sync_does_not_refetch_a_uidl_that_was_already_purged_for_retention() {
         SyncSummary {
             fetched: 1,
             remaining: 0,
-            ended_early: false
+            ended_early: false,
+            server_deleted: 0,
         }
     );
     assert!(
@@ -686,6 +705,7 @@ fn sync_applies_label_rules_to_newly_fetched_messages() {
         None,
         &search_index,
         &rules,
+        None,
         |_, _| {},
     )
     .unwrap();
@@ -698,4 +718,105 @@ fn sync_applies_label_rules_to_newly_fetched_messages() {
     assert_eq!(matching_labels.len(), 1);
     assert_eq!(matching_labels[0].id, label_id);
     assert!(labels::for_message(&conn, unrelated.id).unwrap().is_empty());
+}
+
+/// DELEを受け取ってもQUITが来るまでは確定させず、QUITで初めて`deleted`に
+/// 反映するフェイクサーバー（実POP3のDELEの意味論の再現）。接続は1回だけ受ける。
+fn spawn_server_recording_deletes(
+    messages: Vec<FakeMessage>,
+) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<u32>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let deleted = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let deleted_out = deleted.clone();
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.write_all(b"+OK fake pop3 ready
+").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut marked: Vec<u32> = Vec::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                return;
+            }
+            let line = line.trim_end();
+            if line.starts_with("USER") || line.starts_with("PASS") {
+                stream.write_all(b"+OK
+").unwrap();
+            } else if line == "UIDL" {
+                let mut resp = String::from("+OK
+");
+                for (i, m) in messages.iter().enumerate() {
+                    resp.push_str(&format!("{} {}
+", i + 1, m.uidl));
+                }
+                resp.push_str(".
+");
+                stream.write_all(resp.as_bytes()).unwrap();
+            } else if let Some(rest) = line.strip_prefix("DELE ") {
+                marked.push(rest.trim().parse().unwrap());
+                stream.write_all(b"+OK marked
+").unwrap();
+            } else if line == "QUIT" {
+                deleted.lock().unwrap().extend(marked.drain(..));
+                stream.write_all(b"+OK bye
+").unwrap();
+                return;
+            } else {
+                stream.write_all(b"-ERR unknown command
+").unwrap();
+            }
+        }
+    });
+
+    (port, deleted_out)
+}
+
+/// 古い保存済みメールだけがサーバーから消え、新しいメール・ローカルに実体が無い
+/// メールは残る。取得対象(pending)が空でも削除とQUITが走ることも兼ねて確認する。
+#[test]
+fn sync_deletes_old_stored_messages_from_server_after_quit() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+
+    let fake_messages = vec![
+        FakeMessage { uidl: "old", raw: b"Subject: old
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+
+b" },
+        FakeMessage { uidl: "new", raw: b"Subject: new
+Date: Mon, 1 Jan 2099 00:00:00 +0000
+
+b" },
+        FakeMessage { uidl: "nofile", raw: b"Subject: nofile
+Date: Mon, 1 Jan 2024 00:00:00 +0000
+
+b" },
+    ];
+    // 1回目は通常の取得（server_delete_before=None）で3通すべてをローカルに保存する。
+    let port = spawn_server(fake_messages.iter().map(|m| FakeMessage { uidl: m.uidl, raw: m.raw }).collect());
+    let account = make_account(&conn, port);
+    sync_account_with_limit(
+        &conn, maildir_base.path(), &account, "pw", true, None,
+        &search_index, &LabelRulesFile::default(), None, |_, _| {},
+    )
+    .unwrap();
+    maildir::remove(maildir_base.path(), account.id, "nofile").unwrap();
+
+    // 2回目: pendingは空。2024年より後をカットオフにする。
+    let (port2, deleted) = spawn_server_recording_deletes(fake_messages);
+    let mut account2 = account.clone();
+    account2.port = port2;
+    let cutoff = 1_800_000_000; // 2027年頃
+    let summary = sync_account_with_limit(
+        &conn, maildir_base.path(), &account2, "pw", true, None,
+        &search_index, &LabelRulesFile::default(), Some(cutoff), |_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(summary.server_deleted, 1);
+    assert_eq!(*deleted.lock().unwrap(), vec![1u32]); // "old"のみ
 }
