@@ -11,7 +11,7 @@ use ferro_core::db::messages;
 use ferro_core::label_rules::LabelRule;
 use ferro_core::message_filter::MessageFilter;
 use ferro_core::search::SearchIndex;
-use ferro_core::{credentials, label_rules, paths, reindex, sync};
+use ferro_core::{credentials, label_rules, paths, reindex, settings, sync};
 
 #[derive(Parser)]
 #[command(name = "ferro", version, about = "1000万件規模でも高速に動くPOP3メーラー(CLI)")]
@@ -337,6 +337,7 @@ fn run_sync_command(
         limit,
         search_index,
         &label_rules,
+        settings::load_or_default(&paths::settings_config_path()).server_delete_cutoff(),
         |fetched, total| {
             print!("\rfetched {fetched}/{total}...");
             let _ = std::io::stdout().flush();
