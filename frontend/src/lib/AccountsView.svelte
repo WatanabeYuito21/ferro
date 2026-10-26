@@ -4,6 +4,7 @@
   // 状態そのもの(accounts配列・syncStatus等)はApp.svelte側で持ち続け、
   // ここは表示とフォームのローカル状態(未送信の入力内容)だけを持つ。
   import { openPath } from '@tauri-apps/plugin-opener'
+  import { formatRelative } from './formatDate.js'
 
   let {
     accounts = [],
@@ -107,10 +108,31 @@
       {:else}
         <div class="account-cards">
           {#each accounts as account (account.id)}
+            {@const status = account.sync_status}
             <div class="account-card">
               <div class="account-info">
                 <div class="account-name">{account.name}</div>
                 <div class="account-meta">{account.username}@{account.host}:{account.port}</div>
+                {#if account.uidl_supported === false}
+                  <div class="badge">UIDL非対応（毎回の同期で内容から重複を判定）</div>
+                {/if}
+                {#if !status}
+                  <div class="last-sync">まだ同期していません</div>
+                {:else if status.last_error}
+                  <div class="last-sync failing">
+                    同期に失敗しています（{status.consecutive_failures}回連続、最後の試行
+                    {formatRelative(status.last_attempt_at)}）
+                  </div>
+                  <div class="last-sync-detail">
+                    最後の成功: {status.last_success_at ? formatRelative(status.last_success_at) : 'なし'}
+                  </div>
+                  <div class="last-sync-error">{status.last_error}</div>
+                {:else}
+                  <div class="last-sync">
+                    最終同期 {formatRelative(status.last_success_at)}・{status.last_fetched}件取得・残り{status.last_remaining}件
+                    {#if status.last_ended_early}（切断が続いたため途中で打ち切り）{/if}
+                  </div>
+                {/if}
                 {#if syncStatus[account.id]}
                   <div class="sync-status">{syncStatus[account.id]}</div>
                 {/if}
@@ -128,6 +150,31 @@
 </div>
 
 <style>
+  .badge {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 5px;
+    background: var(--surface-muted);
+    color: var(--text-muted);
+  }
+  .last-sync,
+  .last-sync-detail {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .last-sync.failing {
+    color: var(--danger);
+    font-weight: 600;
+  }
+  .last-sync-error {
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: var(--text-faint);
+    word-break: break-word;
+  }
   .accounts-view {
     max-width: 760px;
   }

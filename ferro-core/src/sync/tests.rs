@@ -381,6 +381,11 @@ fn sync_gives_up_after_exhausting_reconnects_during_initial_handshake() {
         result,
         Err(SyncError::Pop3(Pop3Error::ConnectionClosed))
     ));
+
+    let status = crate::db::sync_status::get(&conn, account.id).unwrap().unwrap();
+    assert_eq!(status.consecutive_failures, 1);
+    assert_eq!(status.last_success_at, None);
+    assert!(status.last_error.is_some());
 }
 
 /// UIDL非対応（送ると接続を切断する）サーバーを模倣する。実際にレンタルサーバー
