@@ -112,8 +112,9 @@
     } catch (e) {
       error = String(e)
     }
-    // 保存した検索の未読数も、フォルダの件数と同じ機会に数え直す。
+    // 保存した検索の未読数と、トレイ/タスクバーの未読数も、フォルダの件数と同じ機会に数え直す。
     refreshSavedSearches()
+    invoke('refresh_unread_badge').catch(() => {})
   }
 
   // `after:`/`before:`の日付を利用者のタイムゾーンの0時で区切るため。
