@@ -243,6 +243,13 @@
   両言語を持ち、インストール開始時に選択ダイアログを出す方式。両方とも
   Tauri/WiX/NSISが標準で持つ言語データを使うだけで、追加の.wxl/.nshファイルは
   用意していない。
+- **バージョン更新は3か所を揃える**（v0.0.14で対応）: ルート`Cargo.toml`の
+  `workspace.package.version`だけを上げて`src-tauri/tauri.conf.json`の`version`を
+  上げ忘れると、タグ・Release名はv0.0.13なのにインストーラー（MSI/NSIS/deb/AppImage）の
+  ファイル名が0.0.12のままになる（v0.0.13で実際に踏んだ。インストーラー名は
+  `tauri.conf.json`のversionから付くため）。公開済みタグは消さない方針のため0.0.14で
+  出し直した。`release.yml`の`check-version`に両者の一致チェックを入れ、ずれていれば
+  ビルド前にエラーで止まるようにした。`frontend/package.json`も合わせて更新する運用。
 - **リリース自動化**（`.github/workflows/release.yml`）: `main`へのpush毎に起動するが、
   実際にビルド・GitHub Releaseを作るのはルート`Cargo.toml`の`workspace.package.version`
   に対応するタグ（`vX.Y.Z`）がまだ`origin`に存在しない場合のみ（`git ls-remote --tags origin`で
