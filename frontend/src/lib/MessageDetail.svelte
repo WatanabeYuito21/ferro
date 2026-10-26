@@ -29,6 +29,11 @@
   let showLabelPicker = $state(false)
   let showSnoozeMenu = $state(false)
   let emlStatus = $state('')
+  // 本文の代わりに何を出すか（'body' | 'headers' | 'source'）。別のメッセージに移っても保つ
+  // （同じ種類のアラートのヘッダーを続けて見比べられるように）。
+  let viewMode = $state('body')
+  let source = $state(null)
+  let sourceError = $state('')
   // 「既読にするまでの時間」の待ち中なら、そのタイマー（`u`で未読に戻した時に止める）。
   let readTimer = null
 
@@ -38,6 +43,8 @@
     error = ''
     saveStatus = {}
     emlStatus = ''
+    source = null
+    sourceError = ''
     showLabelPicker = false
     showSnoozeMenu = false
     flagging = false
@@ -85,7 +92,40 @@
     }
   })
 
+  // ヘッダー・ソースは開いた時に取りに行く（本文だけ見る大多数の場合に余計な読み込みをしない）。
+  $effect(() => {
+    const id = messageId
+    const mode = viewMode
+    if (mode === 'body') return
+    let cancelled = false
+    source = null
+    sourceError = ''
+    invoke('get_message_source', { messageId: id, headersOnly: mode === 'headers' })
+      .then((s) => {
+        if (!cancelled) source = s
+      })
+      .catch((e) => {
+        if (!cancelled) sourceError = String(e)
+      })
+    return () => {
+      cancelled = true
+    }
+  })
+
+  const VIEW_MODES = [
+    ['body', '本文'],
+    ['headers', 'ヘッダー'],
+    ['source', 'ソース'],
+  ]
+
   // 以下の`export`した操作は、ツールバーのボタンとApp.svelteのキーボード操作の両方から呼ぶ。
+
+  // 本文 → ヘッダー → ソース → 本文 の順に切り替える。
+  export function cycleView() {
+    if (!detail) return
+    const index = VIEW_MODES.findIndex(([mode]) => mode === viewMode)
+    viewMode = VIEW_MODES[(index + 1) % VIEW_MODES.length][0]
+  }
 
   export async function toggleFlag() {
     if (!detail || flagging) return
@@ -352,7 +392,31 @@
       </details>
     {/if}
 
-    <pre class="body">{detail.body ?? '(no body)'}</pre>
+    <div class="view-tabs" role="tablist">
+      {#each VIEW_MODES as [mode, label] (mode)}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={viewMode === mode}
+          class:active={viewMode === mode}
+          onclick={() => (viewMode = mode)}>{label}</button
+        >
+      {/each}
+    </div>
+    {#if viewMode === 'body'}
+      <pre class="body">{detail.body ?? '(no body)'}</pre>
+    {:else if sourceError}
+      <p class="error">{sourceError}</p>
+    {:else if source === null}
+      <p class="status">読み込み中…</p>
+    {:else}
+      {#if source.truncated}
+        <p class="status">
+          メール全体が{formatSize(source.total_bytes)}あるため、先頭だけを表示しています。全体は「.emlとして保存…」で確認できます。
+        </p>
+      {/if}
+      <pre class="body source">{source.text}</pre>
+    {/if}
   {/if}
 </div>
 
@@ -573,5 +637,34 @@
   }
   .error {
     color: var(--danger);
+  }
+  .view-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 0.75rem 0 0.5rem;
+  }
+  .view-tabs button {
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: none;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .view-tabs button:hover {
+    background: var(--surface-muted);
+  }
+  .view-tabs button.active {
+    background: var(--accent-soft-bg);
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .body.source {
+    font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+    font-size: calc(12px * var(--content-font-scale, 1));
+    line-height: 1.5;
+    word-break: break-all;
   }
 </style>

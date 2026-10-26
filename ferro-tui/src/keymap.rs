@@ -157,6 +157,7 @@ fn handle_list_or_detail_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()>
         KeyCode::Char('a') => app.toggle_archived()?,
         KeyCode::Char('d') => app.toggle_deleted()?,
         KeyCode::Char('z') => app.awaiting_snooze_choice = true,
+        KeyCode::Char('H') => app.show_headers = !app.show_headers,
         _ => {}
     }
     // Ctrl+CはOS標準の割り込みだが、raw modeでは素通りしてこないので

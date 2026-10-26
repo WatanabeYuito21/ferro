@@ -311,6 +311,12 @@
   CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
   （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
   別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
+- **ヘッダー・ソース表示**（`ferro_core::mail::source`、v0.0.33）: 本文表示の「本文/ヘッダー/ソース」
+  タブ（GUI、`v`キー）とTUIの`H`キー。Maildirの生バイト列のヘッダー部（最初の空行まで）か全体を
+  そのまま見せる調査用の表示なので、RFC 2047のエンコードもデコードしない。行ごとにUTF-8として
+  読めなければ件名の文字化け対策と同じ順（Shift_JIS→EUC-JP→ISO-2022-JP）で読み直す。
+  全体表示は`SOURCE_DISPLAY_LIMIT`（512KB）で行の境目に切り詰める（大きな添付付きのメールで
+  画面が固まらないように）。GUIはタブを開いた時に`get_message_source`で取りに行く。
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`
