@@ -111,6 +111,71 @@
     } catch (e) {
       error = String(e)
     }
+    // 保存した検索の未読数も、フォルダの件数と同じ機会に数え直す。
+    refreshSavedSearches()
+  }
+
+  // `after:`/`before:`の日付を利用者のタイムゾーンの0時で区切るため。
+  function utcOffsetSeconds() {
+    return -new Date().getTimezoneOffset() * 60
+  }
+
+  // 保存した検索（{ name, query, unread }）。
+  let savedSearches = []
+  let savedSearchesRequestId = 0
+
+  async function refreshSavedSearches() {
+    const requestId = ++savedSearchesRequestId
+    try {
+      const result = await invoke('list_saved_searches', { utcOffsetSeconds: utcOffsetSeconds() })
+      if (requestId === savedSearchesRequestId) savedSearches = result
+    } catch (e) {
+      if (requestId === savedSearchesRequestId) error = String(e)
+    }
+  }
+
+  // 検索欄の「保存」。名前の入力欄を出し、確定したら保存する。
+  let savingSearch = false
+  let saveSearchName = ''
+  let saveSearchError = ''
+
+  function startSavingSearch() {
+    const query = searchQuery.trim()
+    if (!query) return
+    savingSearch = !savingSearch
+    saveSearchError = ''
+    saveSearchName = savedSearches.find((s) => s.query === query)?.name ?? query
+  }
+
+  async function saveCurrentSearch() {
+    try {
+      await invoke('add_saved_search', { name: saveSearchName, query: searchQuery.trim() })
+      savingSearch = false
+      await refreshSavedSearches()
+    } catch (e) {
+      saveSearchError = String(e)
+    }
+  }
+
+  async function deleteSavedSearch(index) {
+    try {
+      await invoke('remove_saved_search', { index })
+      await refreshSavedSearches()
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  function openSavedSearch(index) {
+    const search = savedSearches[index]
+    if (!search) return
+    currentView = 'messages'
+    selectedMessageId = null
+    savingSearch = false
+    searchQuery = search.query
+    clearTimeout(searchDebounceTimer)
+    searching = true
+    runSearch(search.query)
   }
 
   async function refreshLabels() {
@@ -634,6 +699,8 @@
   }
 
   const SEARCH_DEBOUNCE_MS = 250
+  // 検索結果として出す最大件数（新しい順）。
+  const SEARCH_LIMIT = 200
 
   function onSearchInput() {
     clearTimeout(searchDebounceTimer)
@@ -656,9 +723,8 @@
     try {
       const results = await invoke('search_messages', {
         query,
-        limit: 50,
-        // `after:`/`before:`の日付を利用者のタイムゾーンの0時で区切るため。
-        utcOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+        limit: SEARCH_LIMIT,
+        utcOffsetSeconds: utcOffsetSeconds(),
       })
       if (requestId !== searchRequestId) return // より新しい検索が既に走っている
       searchResults = results
@@ -710,8 +776,18 @@
       {labels}
       {selectedFolder}
       {selectedLabelId}
-      onSelectFolder={selectFolder}
-      onSelectLabel={selectLabel}
+      {savedSearches}
+      activeSavedQuery={searchResults !== null ? searchQuery.trim() : null}
+      onSelectSavedSearch={openSavedSearch}
+      onDeleteSavedSearch={deleteSavedSearch}
+      onSelectFolder={(key) => {
+        clearSearch()
+        selectFolder(key)
+      }}
+      onSelectLabel={(id) => {
+        clearSearch()
+        selectLabel(id)
+      }}
       onCreateLabel={createLabel}
       onDeleteLabel={deleteLabel}
       onOpenSettings={() => (currentView = 'settings')}
@@ -782,6 +858,14 @@
               {#if searching}
                 <span class="search-spinner">検索中…</span>
               {/if}
+              {#if searchQuery.trim()}
+                <button
+                  type="button"
+                  class:active={savingSearch}
+                  title="この検索をサイドバーに保存"
+                  on:click={startSavingSearch}>保存</button
+                >
+              {/if}
               {#if searchResults !== null}
                 <button type="button" on:click={clearSearch}>クリア</button>
               {/if}
@@ -801,6 +885,19 @@
                 ?
               </button>
             </div>
+            {#if savingSearch}
+              <form class="save-search" on:submit|preventDefault={saveCurrentSearch}>
+                <span>名前</span>
+                <!-- svelte-ignore a11y-autofocus -->
+                <input bind:value={saveSearchName} autofocus />
+                <button type="submit" disabled={!saveSearchName.trim()}>サイドバーに保存</button>
+                <button type="button" on:click={() => (savingSearch = false)}>やめる</button>
+                <span class="save-search-hint">同じ名前があれば検索条件を置き換えます</span>
+                {#if saveSearchError}
+                  <span class="error">{saveSearchError}</span>
+                {/if}
+              </form>
+            {/if}
             {#if showAdvancedSearch}
               <AdvancedSearch
                 {labels}
@@ -837,6 +934,9 @@
                   <ul class="search-results">
                     {#if searchResults.length === 0 && !searching}
                       <li class="empty">該当するメッセージがありません。</li>
+                    {/if}
+                    {#if searchResults.length >= SEARCH_LIMIT}
+                      <li class="empty">新しい方から{SEARCH_LIMIT}件を表示しています（条件を足すと絞り込めます）。</li>
                     {/if}
                     {#each searchResults as message (message.id)}
                       {@const rowColor = matchColor(colorRules, message)}
@@ -994,6 +1094,34 @@
   .search-spinner {
     color: var(--text-muted);
     font-size: 12.5px;
+  }
+  .save-search {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin: -0.25rem 0 0.75rem;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  .save-search input {
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    font: inherit;
+    min-width: 180px;
+  }
+  .save-search button {
+    border: 1px solid var(--border);
+    background: var(--surface-subtle);
+    border-radius: 7px;
+    padding: 5px 12px;
+    font: inherit;
+    cursor: pointer;
+  }
+  .save-search-hint {
+    color: var(--text-faint);
+    font-size: 11.5px;
   }
   .new-mail-banner {
     display: block;

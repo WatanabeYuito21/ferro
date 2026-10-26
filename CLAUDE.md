@@ -312,6 +312,16 @@
   CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
   （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
   別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
+- **保存した検索**（`ferro_core::saved_searches`、v0.0.36）: 検索欄の文字列に名前を付けて
+  `saved_searches.toml`に保存する（`color_rules.toml`と同じくファイルが正の情報源。同じ名前で
+  追加すると条件を置き換える）。結果は保存せず、開くたびに普通の検索として実行する。
+  サイドバーの未読数は`unread_count`（条件に`is:unread`を足して`message_search::search`、
+  `UNREAD_COUNT_CAP`=1000まで）で、GUIは`refreshFolderCounts`のたびに`list_saved_searches`で
+  数え直す。検索結果の上限は50→200件にした。GUIでサイドバーのフォルダ/ラベルを押したら
+  検索を解除するようにした（保存した検索から普通の一覧へ戻れるように）。
+  TUIでは、検索欄で`Enter`を押しても入力モード（`search_mode`）のままで、j/k等が検索欄に
+  入ってしまい結果の中を移動できなかった不具合も直した（`confirm_search`で入力から抜けて
+  結果は残す。結果を出している間の`Esc`で元の一覧へ）。
 - **受信ルールの動作**（v0.0.35）: 自動ラベル付けルール（`LabelRule`）に`RuleActions`
   （`mark_read`/`archive`/`star`/`skip_notification`）を足し、`label_name`は空でもよくした
   （空ならラベルは付けず動作だけ）。ラベルも動作も無いルールは`add`が`NoEffect`で拒む。
