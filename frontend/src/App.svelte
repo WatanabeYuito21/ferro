@@ -6,6 +6,8 @@
   import MessageDetail from './lib/MessageDetail.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import SettingsView from './lib/SettingsView.svelte'
+  import KeyboardHelp from './lib/KeyboardHelp.svelte'
+  import { applyPatch, neighborId } from './lib/messageView.js'
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
   import { applyAppearance } from './lib/appearance.js'
@@ -63,6 +65,15 @@
 
   let selectedMessageId = null
 
+  // キーボード操作（`handleKeydown`）から一覧・本文の操作を呼ぶための参照。
+  let messageList
+  let messageDetail
+  let searchInput
+  let showKeyboardHelp = false
+  // `g`を押した直後なら、次のキーでフォルダへ移動する（`g`→`i`で受信箱、等）。
+  let pendingGoTo = false
+  let pendingGoToTimer = null
+
   let accountsConfigPath = ''
   let reloadingConfig = false
   let reloadConfigStatus = ''
@@ -112,9 +123,149 @@
 
   // メッセージの状態が変わった（アーカイブ/スヌーズ/ラベル付与/削除）ときの共通処理。
   // 一覧を作り直し、フォルダ件数も再取得する（件数が変わりうるため）。
+  // 1件ずつの操作は`handleMessagePatched`で行の更新だけにする。こちらは
+  // 「今すぐ適用」のように多数のメッセージが一度に変わる場合用。
   function handleMessageChanged() {
     messageListRefreshToken += 1
     refreshFolderCounts()
+  }
+
+  // 本文表示（またはキーボード操作）で1件の状態が変わったとき。一覧を作り直さず
+  // 該当行だけ更新し（スクロール位置を保つ）、表示中のフォルダ/ラベルから外れたら
+  // 次のメッセージへ進む（無ければ本文を閉じる）。
+  function handleMessagePatched(id, patch) {
+    let result
+    if (searchResults !== null) {
+      result = applyPatch(searchResults, id, patch, { kind: 'search' })
+      searchResults = result.items
+    } else if (messageList) {
+      result = messageList.applyChange(id, patch)
+    }
+    if (result?.removed && selectedMessageId === id) {
+      selectedMessageId = result.nextId
+    }
+    // フォルダ件数は既読/未読に関係しない（全件数）ので、既読化だけなら数え直さない
+    // （本文を開くたびに全フォルダのCOUNTを取り直すことになるため）。
+    if (Object.keys(patch).some((key) => key !== 'is_read')) refreshFolderCounts()
+    if ('labels' in patch) refreshLabels()
+  }
+
+  function isTypingTarget(target) {
+    return (
+      target instanceof HTMLElement &&
+      (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+    )
+  }
+
+  function scrollSearchResultIntoView(id) {
+    tick().then(() => {
+      document.querySelector(`[data-search-result-id="${id}"]`)?.scrollIntoView({ block: 'nearest' })
+    })
+  }
+
+  function moveSelection(delta) {
+    let id
+    if (searchResults !== null) {
+      id = neighborId(searchResults, selectedMessageId, delta)
+      if (id != null) scrollSearchResultIntoView(id)
+    } else {
+      id = messageList?.moveSelection(delta) ?? null
+    }
+    if (id != null) selectedMessageId = id
+  }
+
+  const GO_TO_FOLDER = { i: 'inbox', s: 'starred', z: 'snoozed', a: 'archive', t: 'trash' }
+
+  // キーボードショートカット（一覧は`KeyboardHelp.svelte`。変えるときは両方を揃える）。
+  // 入力欄にフォーカスがある間は、Escで入力欄から抜ける以外は何もしない。
+  function handleKeydown(event) {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return
+    if (isTypingTarget(event.target)) {
+      if (event.key === 'Escape') event.target.blur()
+      return
+    }
+    if (showKeyboardHelp) {
+      if (event.key === 'Escape' || event.key === '?') {
+        showKeyboardHelp = false
+        event.preventDefault()
+      }
+      return
+    }
+    if (event.key === '?') {
+      showKeyboardHelp = true
+      event.preventDefault()
+      return
+    }
+    if (currentView !== 'messages') return
+
+    if (pendingGoTo) {
+      pendingGoTo = false
+      clearTimeout(pendingGoToTimer)
+      const folder = GO_TO_FOLDER[event.key]
+      if (folder) {
+        clearSearch()
+        selectFolder(folder)
+        event.preventDefault()
+      }
+      return
+    }
+
+    const detail = selectedMessageId !== null ? messageDetail : null
+    let handled = true
+    switch (event.key) {
+      case 'j':
+      case 'ArrowDown':
+        moveSelection(1)
+        break
+      case 'k':
+      case 'ArrowUp':
+        moveSelection(-1)
+        break
+      case 'Enter':
+      case 'o':
+        // ボタン等にフォーカスがある時のEnterは、そのボタンを押す本来の動作に任せる。
+        if (event.key === 'Enter' && event.target.closest?.('button, a, [role="button"]')) {
+          handled = false
+        } else if (selectedMessageId === null) {
+          moveSelection(0)
+        }
+        break
+      case 'Escape':
+        if (selectedMessageId !== null) selectedMessageId = null
+        else if (searchResults !== null) clearSearch()
+        else handled = false
+        break
+      case '/':
+        searchInput?.focus()
+        break
+      case 'g':
+        pendingGoTo = true
+        // 少し待っても次のキーが来なければ取り消す。
+        pendingGoToTimer = setTimeout(() => (pendingGoTo = false), 1500)
+        break
+      case 'e':
+        detail?.toggleArchive()
+        break
+      case 's':
+        detail?.toggleFlag()
+        break
+      case 'u':
+        detail?.toggleRead()
+        break
+      case '#':
+      case 'Delete':
+        detail?.deleteMessage()
+        break
+      case 'b':
+        detail?.toggleSnoozeMenu()
+        break
+      case 'l':
+        detail?.toggleLabelPicker()
+        break
+      default:
+        handled = false
+    }
+    if (handled) event.preventDefault()
   }
 
   function selectFolder(key) {
@@ -396,6 +547,12 @@
   }
 </script>
 
+<svelte:window on:keydown={handleKeydown} />
+
+{#if showKeyboardHelp}
+  <KeyboardHelp onClose={() => (showKeyboardHelp = false)} />
+{/if}
+
 <main>
   {#if error}
     <p class="error top-error">{error}</p>
@@ -471,7 +628,8 @@
         <section class="messages-view">
             <div class="search-bar">
               <input
-                placeholder="件名/差出人/本文を検索…"
+                placeholder="件名/差出人/本文を検索…（/ で移動）"
+                bind:this={searchInput}
                 bind:value={searchQuery}
                 on:input={onSearchInput}
               />
@@ -481,6 +639,14 @@
               {#if searchResults !== null}
                 <button type="button" on:click={clearSearch}>クリア</button>
               {/if}
+              <button
+                type="button"
+                class="shortcut-hint"
+                title="キーボードショートカット"
+                on:click={() => (showKeyboardHelp = true)}
+              >
+                ?
+              </button>
             </div>
             {#if searchError}
               <p class="error">{searchError}</p>
@@ -505,6 +671,9 @@
                         <button
                           type="button"
                           class="result-row"
+                          class:selected={message.id === selectedMessageId}
+                          class:unread={!message.is_read}
+                          data-search-result-id={message.id}
                           on:click={() => (selectedMessageId = message.id)}
                         >
                           <span class="from" style={rowColor ? `color: ${rowColor}` : ''}>{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
@@ -517,8 +686,10 @@
                 {:else}
                   {#key messageListRefreshToken}
                     <MessageList
+                      bind:this={messageList}
                       folder={selectedFolder}
                       labelId={selectedLabelId}
+                      selectedId={selectedMessageId}
                       {colorRules}
                       onSelect={(id) => (selectedMessageId = id)}
                     />
@@ -529,11 +700,12 @@
               {#if selectedMessageId !== null}
                 <div class="detail-pane">
                   <MessageDetail
+                    bind:this={messageDetail}
                     messageId={selectedMessageId}
                     allLabels={labels}
                     markReadDelay={settings.mark_read_delay}
                     onClose={() => (selectedMessageId = null)}
-                    onChanged={handleMessageChanged}
+                    onChanged={handleMessagePatched}
                   />
                 </div>
               {/if}
@@ -726,6 +898,17 @@
   }
   .result-row:hover {
     background: var(--surface-muted);
+  }
+  .result-row.selected {
+    background: var(--accent-soft-bg);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .search-results .result-row:not(.unread) .subject {
+    font-weight: 400;
+  }
+  .search-bar .shortcut-hint {
+    padding: 7px 11px;
+    color: var(--text-muted);
   }
   .search-results .from {
     flex: 0 0 160px;
