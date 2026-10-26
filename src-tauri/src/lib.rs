@@ -881,6 +881,28 @@ async fn reindex_all(app: AppHandle) -> Result<usize, String> {
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Serialize)]
+struct IndexStatusView {
+    total: i64,
+    indexed: i64,
+    index_docs: u64,
+    rebuilding: bool,
+}
+
+/// 設定画面の「インデックスの状態」表示用（`reindex::index_status`参照）。
+/// 全件のCOUNTを取るので、画面を開いた時と利用者が押した時にだけ呼ばれる。
+#[tauri::command(async)]
+fn get_search_index_status(state: State<AppState>) -> Result<IndexStatusView, String> {
+    let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
+    let status = reindex::index_status(&conn, &state.search_index).map_err(|e| e.to_string())?;
+    Ok(IndexStatusView {
+        total: status.total,
+        indexed: status.indexed,
+        index_docs: status.index_docs,
+        rebuilding: status.rebuilding,
+    })
+}
+
 /// メール保持期間（`settings::Settings::retention_days`）が切れたメッセージを
 /// まとめて完全に削除する（設定画面の「今すぐ整理する」ボタン用）。
 /// `spawn_retention_cleanup`が定期的に同じ処理をバックグラウンドで行うが、
@@ -1298,6 +1320,7 @@ pub fn run() {
             sync_account,
             search_messages,
             reindex_all,
+            get_search_index_status,
             purge_expired_messages,
             get_message_detail,
             save_attachment,
