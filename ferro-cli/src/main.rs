@@ -87,6 +87,13 @@ enum Command {
         #[arg(long)]
         restore: bool,
     },
+    /// メッセージを.eml（保存済みの生メールそのまま）として書き出す
+    Export {
+        message_id: i64,
+        /// 書き出し先。省略すると件名から作ったファイル名でカレントディレクトリに書く
+        #[arg(long, short)]
+        output: Option<std::path::PathBuf>,
+    },
     /// ラベル管理（作成/削除はGUI限定。ここでは一覧表示のみ）
     Label {
         #[command(subcommand)]
@@ -197,6 +204,16 @@ fn main() -> anyhow::Result<()> {
         Command::Delete { message_id, restore } => {
             ferro_core::message_actions::set_deleted(&conn, &search_index, message_id, !restore)?;
             println!("message #{message_id} {}.", if restore { "restored" } else { "deleted" });
+        }
+        Command::Export { message_id, output } => {
+            let message = messages::get(&conn, message_id)?
+                .ok_or_else(|| anyhow::anyhow!("message #{message_id} not found"))?;
+            let raw = ferro_core::maildir::load(&paths::maildir_dir(), message.account_id, &message.uidl)?;
+            let output = output.unwrap_or_else(|| {
+                ferro_core::mail::export::suggested_eml_filename(message.subject.as_deref(), message.id).into()
+            });
+            std::fs::write(&output, raw)?;
+            println!("message #{message_id} exported to {}.", output.display());
         }
         Command::Label { action } => run_label_command(&conn, action)?,
         Command::LabelRule { action } => run_label_rule_command(&conn, action)?,
