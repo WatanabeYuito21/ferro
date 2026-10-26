@@ -212,15 +212,18 @@ fn main() -> anyhow::Result<()> {
             let report = ferro_core::maintenance::optimize(
                 &conn,
                 &paths::db_path(),
+                &paths::maildir_dir(),
                 &search_index,
                 &paths::search_index_dir(),
             )?;
             let mb = |bytes: u64| bytes as f64 / 1_048_576.0;
             println!(
-                "freed {:.1} MB (database {:.1} -> {:.1} MB, search index {:.1} -> {:.1} MB).",
+                "freed {:.1} MB (database {:.1} -> {:.1} MB, mail {:.1} -> {:.1} MB, search index {:.1} -> {:.1} MB).",
                 mb(report.freed()),
                 mb(report.db_before),
                 mb(report.db_after),
+                mb(report.mail_before),
+                mb(report.mail_after),
                 mb(report.index_before),
                 mb(report.index_after)
             );

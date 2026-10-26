@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -579,9 +578,8 @@ fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
     )
     .unwrap();
 
-    let uidl = content_uidl(b"Subject: one\r\n\r\nbody1");
-    let path = maildir::message_path(maildir_base.path(), account.id, &uidl);
-    let mtime_after_first_sync = fs::metadata(&path).unwrap().modified().unwrap();
+    let writes_after_first_sync = crate::maildir::tests::write_count(maildir_base.path());
+    assert_eq!(writes_after_first_sync, 1);
 
     let updated_account = accounts::get(&conn, account.id).unwrap().unwrap();
     sync_account_with_limit(
@@ -598,9 +596,9 @@ fn sync_fallback_does_not_rewrite_already_stored_messages_to_disk() {
     )
     .unwrap();
 
-    let mtime_after_second_sync = fs::metadata(&path).unwrap().modified().unwrap();
     assert_eq!(
-        mtime_after_first_sync, mtime_after_second_sync,
+        crate::maildir::tests::write_count(maildir_base.path()),
+        writes_after_first_sync,
         "the already-known message must not be rewritten to disk on the second sync"
     );
 }
