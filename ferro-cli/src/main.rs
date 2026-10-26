@@ -1,6 +1,6 @@
 mod bench;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use clap::{Parser, Subcommand};
 use ferro_core::account_config::{self, AccountConfig};
@@ -420,7 +420,17 @@ fn run_reindex_command(
     conn: &ferro_core::db::Connection,
     search_index: &SearchIndex,
 ) -> anyhow::Result<()> {
-    let count = reindex::reindex_all(conn, &paths::maildir_dir(), search_index)?;
+    // 進捗は端末に出しているときだけ同じ行を上書きして表示する
+    // （リダイレクト先のログに\r混じりの行を大量に残さないため）。
+    let show_progress = std::io::stderr().is_terminal();
+    let count = reindex::reindex_all_with_progress(conn, &paths::maildir_dir(), search_index, |p| {
+        if show_progress {
+            eprint!("\rreindexing... {}/{}", p.processed, p.total);
+        }
+    })?;
+    if show_progress {
+        eprintln!();
+    }
     println!("reindexed {count} message(s).");
     Ok(())
 }
