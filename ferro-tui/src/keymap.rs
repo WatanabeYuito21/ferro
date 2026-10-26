@@ -21,6 +21,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // 設定画面の入力フォーム・削除確認が出ている間は、全てのキーをそちらへ渡す
+    // （'q'での終了や','での画面切替を、入力中の文字として飲み込まれないように）。
+    if app.screen == Screen::Settings && (app.settings_form.is_some() || app.settings_confirm.is_some()) {
+        crate::settings_screen::handle_key(app, key);
+        return Ok(());
+    }
+
     // スヌーズのプリセット選択待ち（`z`の直後）。
     if app.awaiting_snooze_choice {
         app.awaiting_snooze_choice = false;
@@ -60,12 +67,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
 
     match app.screen {
         Screen::Settings => {
-            match key.code {
-                KeyCode::Esc => app.screen = Screen::Messages,
-                KeyCode::Char('R') => app.run_reindex_now(),
-                KeyCode::Char('P') => app.run_purge_now(),
-                _ => {}
-            }
+            crate::settings_screen::handle_key(app, key);
             Ok(())
         }
         Screen::Messages => handle_messages_key(app, key),
