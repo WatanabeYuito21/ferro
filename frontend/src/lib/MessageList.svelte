@@ -6,18 +6,34 @@
   import { untrack } from 'svelte'
   import { matchColor } from './colorRules.js'
   import { formatDate } from './formatDate.js'
-  import { applyPatch, neighborId } from './messageView.js'
+  import { applyPatch, neighborId, clickSelection, toggleChecked } from './messageView.js'
 
   // labelIdが指定されているときはfolderを無視してラベル一覧を表示する
   // （サイドバーはフォルダかラベルのどちらか一方を選ぶ設計）。
   // `selectedId`は詳細表示中のメッセージ（行をハイライトし、キーボードの上下移動の起点にする）。
+  // `checkedIds`/`checkAnchor`は複数選択（一括操作用）の状態で、App.svelteが持つ
+  // （`messageView.js`の`clickSelection`参照）。変わったら`onCheck`で知らせる。
   let {
     folder = 'inbox',
     labelId = null,
     selectedId = null,
+    checkedIds = new Set(),
+    checkAnchor = null,
     colorRules = [],
     onSelect = () => {},
+    onCheck = () => {},
   } = $props()
+
+  function onRowClick(id, event) {
+    const result = clickSelection(items, checkedIds, checkAnchor, id, event)
+    onCheck(result.checked, result.anchor)
+    if (result.open) onSelect(id)
+  }
+
+  function onCheckboxClick(id, event) {
+    event.stopPropagation()
+    onCheck(toggleChecked(checkedIds, id), id)
+  }
 
   const ROW_HEIGHT = 68
   const OVERSCAN_ROWS = 5
@@ -108,6 +124,11 @@
     return id
   }
 
+  // 読み込み済みの行（一括操作の対象を決める・「表示中をすべて選択」用）。
+  export function getItems() {
+    return items
+  }
+
   // 操作結果をその行に反映する（`messageView.js`参照）。表示中のフォルダ/ラベルから
   // 外れた行は取り除き、代わりに選ぶべき行のidを返す。
   export function applyChange(id, patch) {
@@ -146,13 +167,21 @@
           class="row"
           class:unread={!message.is_read}
           class:selected={message.id === selectedId}
+          class:checked={checkedIds.has(message.id)}
           style="height: {ROW_HEIGHT}px"
           role="button"
           tabindex="0"
-          onclick={() => onSelect(message.id)}
+          onclick={(e) => onRowClick(message.id, e)}
           onkeydown={(e) => e.key === 'Enter' && onSelect(message.id)}
         >
           <div class="line1">
+            <input
+              type="checkbox"
+              class="check"
+              aria-label="選択"
+              checked={checkedIds.has(message.id)}
+              onclick={(e) => onCheckboxClick(message.id, e)}
+            />
             {#if message.is_flagged}<span class="star">★</span>{/if}
             <span class="from" title={message.from_addr ?? ''} style={rowColor ? `color: ${rowColor}` : ''}>
               {message.from_name ?? message.from_addr ?? '(unknown sender)'}
@@ -228,6 +257,20 @@
     background: var(--accent-soft-bg);
     box-shadow: inset 3px 0 0 var(--accent);
   }
+  .row.checked {
+    background: var(--accent-soft-bg);
+  }
+  .row {
+    user-select: none;
+  }
+  .check {
+    flex: none;
+    margin: 0;
+    width: 13px;
+    height: 13px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
   .line1 {
     display: flex;
     align-items: center;
@@ -254,7 +297,7 @@
   }
   .subject {
     font-size: calc(13px * var(--content-font-scale, 1));
-    margin-left: 14px;
+    margin-left: 21px;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -264,7 +307,7 @@
   .preview {
     font-size: calc(12px * var(--content-font-scale, 1));
     color: var(--text-muted);
-    margin-left: 14px;
+    margin-left: 21px;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -277,7 +320,7 @@
   .chips {
     display: flex;
     gap: 6px;
-    margin: 2px 0 0 14px;
+    margin: 2px 0 0 21px;
     overflow: hidden;
   }
   .chip {

@@ -7,7 +7,8 @@
   import Sidebar from './lib/Sidebar.svelte'
   import SettingsView from './lib/SettingsView.svelte'
   import KeyboardHelp from './lib/KeyboardHelp.svelte'
-  import { applyPatch, neighborId } from './lib/messageView.js'
+  import BulkActionBar from './lib/BulkActionBar.svelte'
+  import { applyPatch, neighborId, clickSelection, toggleChecked } from './lib/messageView.js'
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
   import { applyAppearance } from './lib/appearance.js'
@@ -74,6 +75,12 @@
   let pendingGoTo = false
   let pendingGoToTimer = null
 
+  // 複数選択（一括操作用）。開いているメッセージ(`selectedMessageId`)とは別に持つ。
+  // フォルダ/ラベル/検索を切り替えたら解除する。
+  let checkedIds = new Set()
+  let checkAnchor = null
+  let bulkBusy = false
+
   let accountsConfigPath = ''
   let reloadingConfig = false
   let reloadConfigStatus = ''
@@ -134,13 +141,7 @@
   // 該当行だけ更新し（スクロール位置を保つ）、表示中のフォルダ/ラベルから外れたら
   // 次のメッセージへ進む（無ければ本文を閉じる）。
   function handleMessagePatched(id, patch) {
-    let result
-    if (searchResults !== null) {
-      result = applyPatch(searchResults, id, patch, { kind: 'search' })
-      searchResults = result.items
-    } else if (messageList) {
-      result = messageList.applyChange(id, patch)
-    }
+    const result = applyToList(id, patch)
     if (result?.removed && selectedMessageId === id) {
       selectedMessageId = result.nextId
     }
@@ -150,11 +151,22 @@
     if ('labels' in patch) refreshLabels()
   }
 
+  // 一覧（検索中なら検索結果）の該当行に`patch`を当てる。外れた行は取り除かれる。
+  function applyToList(id, patch) {
+    if (searchResults !== null) {
+      const result = applyPatch(searchResults, id, patch, { kind: 'search' })
+      searchResults = result.items
+      return result
+    }
+    return messageList?.applyChange(id, patch)
+  }
+
+  // 文字入力中の要素か（チェックボックス等の文字を打たない<input>は含めない。
+  // 一覧のチェックボックスをクリックした直後もショートカットが効くように）。
   function isTypingTarget(target) {
-    return (
-      target instanceof HTMLElement &&
-      (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
-    )
+    if (!(target instanceof HTMLElement)) return false
+    if (target.isContentEditable || ['TEXTAREA', 'SELECT'].includes(target.tagName)) return true
+    return target.tagName === 'INPUT' && !['checkbox', 'radio', 'button'].includes(target.type)
   }
 
   function scrollSearchResultIntoView(id) {
@@ -210,6 +222,13 @@
       return
     }
 
+    // 複数選択中は、本文に対する操作の代わりに選択中の全メッセージへ一括で行う。
+    if (checkedIds.size > 0 && ['e', 's', 'u', '#', 'Delete'].includes(event.key)) {
+      runBulkFromKey(event.key)
+      event.preventDefault()
+      return
+    }
+
     const detail = selectedMessageId !== null ? messageDetail : null
     let handled = true
     switch (event.key) {
@@ -230,8 +249,15 @@
           moveSelection(0)
         }
         break
+      case 'x':
+        if (selectedMessageId !== null) {
+          checkedIds = toggleChecked(checkedIds, selectedMessageId)
+          checkAnchor = selectedMessageId
+        }
+        break
       case 'Escape':
-        if (selectedMessageId !== null) selectedMessageId = null
+        if (checkedIds.size > 0) clearChecked()
+        else if (selectedMessageId !== null) selectedMessageId = null
         else if (searchResults !== null) clearSearch()
         else handled = false
         break
@@ -274,6 +300,7 @@
     selectedLabelId = null
     selectedMessageId = null
     newMailCount = 0
+    clearChecked()
   }
 
   function selectLabel(labelId) {
@@ -281,6 +308,106 @@
     selectedLabelId = labelId
     selectedMessageId = null
     newMailCount = 0
+    clearChecked()
+  }
+
+  function clearChecked() {
+    checkedIds = new Set()
+    checkAnchor = null
+  }
+
+  function setChecked(checked, anchor) {
+    checkedIds = checked
+    checkAnchor = anchor
+  }
+
+  // いま一覧に出ている行（検索中なら検索結果）。
+  function visibleItems() {
+    return searchResults ?? messageList?.getItems() ?? []
+  }
+
+  function onSearchResultClick(id, event) {
+    const result = clickSelection(searchResults, checkedIds, checkAnchor, id, event)
+    setChecked(result.checked, result.anchor)
+    if (result.open) selectedMessageId = id
+  }
+
+  const SNOOZE_SECONDS = { '1d': 24 * 60 * 60, '3d': 3 * 24 * 60 * 60, '1w': 7 * 24 * 60 * 60 }
+
+  // 一括操作の結果を一覧の行に当てるための変更内容（`messageView.js`の`applyPatch`）。
+  function bulkPatch(action) {
+    switch (action.kind) {
+      case 'read':
+        return { is_read: action.value }
+      case 'flag':
+        return { is_flagged: action.value }
+      case 'archive':
+        return { is_archived: action.value }
+      case 'snooze':
+        return {
+          snoozed_until:
+            action.preset == null ? null : Math.floor(Date.now() / 1000) + SNOOZE_SECONDS[action.preset],
+        }
+      case 'delete':
+        return { is_deleted: true }
+      case 'label': {
+        const label = labels.find((l) => l.id === action.label_id)
+        return (message) => {
+          const others = message.labels.filter((l) => l.id !== action.label_id)
+          return {
+            labels:
+              action.assigned && label
+                ? [...others, { id: label.id, name: label.name, color: label.color }]
+                : others,
+          }
+        }
+      }
+    }
+    return {}
+  }
+
+  async function runBulk(action) {
+    const ids = [...checkedIds]
+    if (ids.length === 0 || bulkBusy) return
+    bulkBusy = true
+    try {
+      await invoke('bulk_update', { messageIds: ids, action })
+      const patch = bulkPatch(action)
+      for (const id of ids) applyToList(id, patch)
+      // 開いている本文の表示は古くなるので閉じる（一覧の行は上で更新済み）。
+      if (ids.includes(selectedMessageId)) selectedMessageId = null
+      clearChecked()
+      refreshFolderCounts()
+      if (action.kind === 'label') refreshLabels()
+    } catch (e) {
+      error = String(e)
+    } finally {
+      bulkBusy = false
+    }
+  }
+
+  // キーボードの`e`/`s`/`u`/`#`を、選択中の全メッセージに対して行う。
+  // スター・既読は、全部が既にその状態なら外す（1件の時の切り替えと同じ感覚にする）。
+  function runBulkFromKey(key) {
+    const items = visibleItems().filter((m) => checkedIds.has(m.id))
+    switch (key) {
+      case 'e':
+        runBulk({
+          kind: 'archive',
+          value: !(selectedLabelId === null && selectedFolder === 'archive'),
+        })
+        break
+      case 's':
+        runBulk({ kind: 'flag', value: !items.every((m) => m.is_flagged) })
+        break
+      case 'u':
+        runBulk({ kind: 'read', value: items.some((m) => !m.is_read) })
+        break
+      case '#':
+      case 'Delete':
+        runBulk({ kind: 'delete' })
+        break
+    }
   }
 
   // 「新着があります」バナーがクリックされた時だけ、実際に一覧を最初のページから
@@ -523,6 +650,7 @@
 
   async function runSearch(query) {
     const requestId = ++searchRequestId
+    clearChecked()
     try {
       const results = await invoke('search_messages', { query, limit: 50 })
       if (requestId !== searchRequestId) return // より新しい検索が既に走っている
@@ -538,6 +666,7 @@
   }
 
   function clearSearch() {
+    clearChecked()
     clearTimeout(searchDebounceTimer)
     searchRequestId += 1
     searchQuery = ''
@@ -658,6 +787,19 @@
               </button>
             {/if}
 
+            {#if checkedIds.size > 0}
+              <BulkActionBar
+                count={checkedIds.size}
+                folder={selectedFolder}
+                labelId={searchResults === null ? selectedLabelId : null}
+                {labels}
+                busy={bulkBusy}
+                onAction={runBulk}
+                onSelectAll={() => setChecked(new Set(visibleItems().map((m) => m.id)), checkAnchor)}
+                onClear={clearChecked}
+              />
+            {/if}
+
             <div class="messages-layout">
               <div class="list-pane">
                 {#if searchResults !== null}
@@ -668,18 +810,28 @@
                     {#each searchResults as message (message.id)}
                       {@const rowColor = matchColor(colorRules, message)}
                       <li>
-                        <button
-                          type="button"
+                        <div
                           class="result-row"
                           class:selected={message.id === selectedMessageId}
+                          class:checked={checkedIds.has(message.id)}
                           class:unread={!message.is_read}
                           data-search-result-id={message.id}
-                          on:click={() => (selectedMessageId = message.id)}
+                          role="button"
+                          tabindex="0"
+                          on:click={(e) => onSearchResultClick(message.id, e)}
+                          on:keydown={(e) => e.key === 'Enter' && (selectedMessageId = message.id)}
                         >
+                          <input
+                            type="checkbox"
+                            class="check"
+                            aria-label="選択"
+                            checked={checkedIds.has(message.id)}
+                            on:click|stopPropagation={() => setChecked(toggleChecked(checkedIds, message.id), message.id)}
+                          />
                           <span class="from" style={rowColor ? `color: ${rowColor}` : ''}>{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
                           <span class="subject" style={rowColor ? `color: ${rowColor}` : ''}>{message.subject ?? '(no subject)'}</span>
                           <span class="date">{formatDate(message.date_header)}</span>
-                        </button>
+                        </div>
                       </li>
                     {/each}
                   </ul>
@@ -690,8 +842,11 @@
                       folder={selectedFolder}
                       labelId={selectedLabelId}
                       selectedId={selectedMessageId}
+                      {checkedIds}
+                      {checkAnchor}
                       {colorRules}
                       onSelect={(id) => (selectedMessageId = id)}
+                      onCheck={setChecked}
                     />
                   {/key}
                 {/if}
@@ -902,6 +1057,19 @@
   .result-row.selected {
     background: var(--accent-soft-bg);
     box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .result-row.checked {
+    background: var(--accent-soft-bg);
+  }
+  .result-row {
+    user-select: none;
+  }
+  .result-row .check {
+    flex: none;
+    align-self: center;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
   }
   .search-results .result-row:not(.unread) .subject {
     font-weight: 400;
