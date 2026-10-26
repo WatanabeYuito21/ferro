@@ -250,6 +250,13 @@
   `tauri.conf.json`のversionから付くため）。公開済みタグは消さない方針のため0.0.14で
   出し直した。`release.yml`の`check-version`に両者の一致チェックを入れ、ずれていれば
   ビルド前にエラーで止まるようにした。`frontend/package.json`も合わせて更新する運用。
+- **手動Syncと自動同期の競合**（v0.0.15で対応）: 手動Sync(`sync_account`、`limit: None`で全件)と
+  バックグラウンド同期(`BACKGROUND_SYNC_LIMIT`=200件上限)は同じ`write_conn`ロックを待つため、
+  手動Syncが終わった直後に上限付きの自動同期が走り、`background-sync`イベントで手動Syncの
+  結果表示（取得件数）が上書きされて「少ない件数しか同期されていない」ように見えた。
+  `AppState::manual_syncs`（`ManualSyncGuard`のRAIIカウンタ。ロック待ちの間も数える）が
+  0より大きい間は`run_background_sync_once`が次のアカウントの同期を始めず次サイクルに回す。
+  フロント側も`manualSyncing`中のアカウントについては`background-sync`イベントを無視する。
 - **リリース自動化**（`.github/workflows/release.yml`）: `main`へのpush毎に起動するが、
   実際にビルド・GitHub Releaseを作るのはルート`Cargo.toml`の`workspace.package.version`
   に対応するタグ（`vX.Y.Z`）がまだ`origin`に存在しない場合のみ（`git ls-remote --tags origin`で
