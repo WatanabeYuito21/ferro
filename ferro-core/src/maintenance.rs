@@ -1,4 +1,5 @@
-//! ディスクの最適化（設定画面の「今すぐ最適化する」、`ferro optimize`）。
+//! ディスクの最適化（設定画面の「今すぐ最適化する」、`ferro optimize`）。生メールの保存先
+//! （`maildir`の`messages.db`、v0.0.40）も同じく詰める。
 //!
 //! メールを消してもSQLiteのファイルは縮まず（空いたページは再利用されるだけ）、検索
 //! インデックスも削除した文書を「削除済み」の印として持ち続ける（領域はセグメントの
@@ -22,6 +23,8 @@ pub enum MaintenanceError {
     Db(#[from] rusqlite::Error),
     #[error(transparent)]
     Search(#[from] SearchError),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// 最適化の前後のサイズ（バイト）。
@@ -29,6 +32,9 @@ pub enum MaintenanceError {
 pub struct OptimizeReport {
     pub db_before: u64,
     pub db_after: u64,
+    /// 生メールの保存先（`maildir`）。
+    pub mail_before: u64,
+    pub mail_after: u64,
     pub index_before: u64,
     pub index_after: u64,
 }
@@ -36,7 +42,8 @@ pub struct OptimizeReport {
 impl OptimizeReport {
     /// 取り戻せたバイト数（増えた場合は0）。
     pub fn freed(&self) -> u64 {
-        (self.db_before + self.index_before).saturating_sub(self.db_after + self.index_after)
+        (self.db_before + self.mail_before + self.index_before)
+            .saturating_sub(self.db_after + self.mail_after + self.index_after)
     }
 }
 
@@ -46,10 +53,16 @@ impl OptimizeReport {
 pub fn optimize(
     conn: &Connection,
     db_path: &Path,
+    maildir_base: &Path,
     index: &SearchIndex,
     index_dir: &Path,
 ) -> Result<OptimizeReport, MaintenanceError> {
-    let mut report = OptimizeReport { db_before: db_size(db_path), index_before: dir_size(index_dir), ..Default::default() };
+    let mut report = OptimizeReport {
+        db_before: db_size(db_path),
+        mail_before: crate::maildir::storage_size(maildir_base),
+        index_before: dir_size(index_dir),
+        ..Default::default()
+    };
     {
         // 再構築と同時に走らないよう、再構築と同じ印を立てる（起動時の拾い直しも止まる）。
         let _guard = index.begin_rebuild()?;
@@ -58,7 +71,10 @@ pub fn optimize(
     crate::logging::log_line("maintenance: search index merged");
     conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")?;
     crate::logging::log_line("maintenance: database vacuumed");
+    crate::maildir::vacuum(maildir_base)?;
+    crate::logging::log_line("maintenance: mail store vacuumed");
     report.db_after = db_size(db_path);
+    report.mail_after = crate::maildir::storage_size(maildir_base);
     report.index_after = dir_size(index_dir);
     Ok(report)
 }
@@ -78,7 +94,7 @@ fn file_size(path: &Path) -> u64 {
     fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-fn dir_size(dir: &Path) -> u64 {
+pub(crate) fn dir_size(dir: &Path) -> u64 {
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;
     };
@@ -117,7 +133,11 @@ mod tests {
         index.delete_message(2).unwrap();
         index.commit().unwrap();
 
-        let report = optimize(&conn, &db_path, &index, &dir.path().join("no-index-dir")).unwrap();
+        let mail = dir.path().join("maildir");
+        crate::maildir::store(&mail, 1, "u1", &vec![b'x'; 256 * 1024]).unwrap();
+        crate::maildir::remove(&mail, 1, "u1").unwrap();
+        let report = optimize(&conn, &db_path, &mail, &index, &dir.path().join("no-index-dir")).unwrap();
+        assert!(report.mail_after < report.mail_before, "{report:?}");
         assert!(report.db_after < report.db_before / 2, "{report:?}");
         assert!(report.freed() > 0);
         assert_eq!(index.search("障害", 10).unwrap(), vec![3, 1]);
@@ -126,7 +146,7 @@ mod tests {
         // 再構築中は最適化しない。
         let _guard = index.begin_rebuild().unwrap();
         assert!(matches!(
-            optimize(&conn, &db_path, &index, dir.path()),
+            optimize(&conn, &db_path, &mail, &index, dir.path()),
             Err(MaintenanceError::Search(SearchError::RebuildInProgress))
         ));
     }
