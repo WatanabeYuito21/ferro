@@ -81,7 +81,7 @@ fn recover_mojibake_header(raw: &[u8], header_name: &str, decoded: Option<&str>)
 /// 最初の結果を返す（`recover_mojibake_header`のドキュメント参照）。Shift_JISを
 /// 最初に試すのは、raw非エンコードのlegacy日本語件名を送ってくる送信元では
 /// 最も多いと見られるため。
-fn try_decode_legacy_japanese(bytes: &[u8]) -> Option<String> {
+pub(crate) fn try_decode_legacy_japanese(bytes: &[u8]) -> Option<String> {
     for encoding in [encoding_rs::SHIFT_JIS, encoding_rs::EUC_JP, encoding_rs::ISO_2022_JP] {
         let (decoded, _, had_errors) = encoding.decode(bytes);
         if !had_errors && !decoded.contains('\u{FFFD}') {

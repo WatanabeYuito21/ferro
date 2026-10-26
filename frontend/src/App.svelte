@@ -290,6 +290,9 @@
       case 'l':
         detail?.toggleLabelPicker()
         break
+      case 'v':
+        detail?.cycleView()
+        break
       default:
         handled = false
     }
