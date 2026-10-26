@@ -10,6 +10,9 @@ pub struct ParsedHeaders {
     pub to_addr: Option<String>,
     /// DateヘッダーをパースしたUnixエポック秒。ヘッダーが無い/パース不能ならNone。
     pub date_header: Option<i64>,
+    /// このメールが返信している相手のMessage-ID（`References`の順＝スレッドの根から
+    /// 親へ、続けて`In-Reply-To`。重複は除く）。スレッドの判定に使う（`threads`参照）。
+    pub references: Vec<String>,
 }
 
 fn headers_from_message(raw: &[u8], message: &Message) -> ParsedHeaders {
@@ -32,7 +35,21 @@ fn headers_from_message(raw: &[u8], message: &Message) -> ParsedHeaders {
         from_addr: from.and_then(|a| a.address()).map(str::to_string),
         to_addr: to.and_then(|a| a.address()).map(str::to_string),
         date_header: message.date().map(|d| d.to_timestamp()),
+        references: references_of(message),
     }
+}
+
+fn references_of(message: &Message) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for value in [message.references(), message.in_reply_to()] {
+        for id in value.as_text_list().unwrap_or_default() {
+            let id = id.trim();
+            if !id.is_empty() && !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
 }
 
 /// 生メールのバイト列からヘッダーのみを解析する（本文はデコードしないため高速）。

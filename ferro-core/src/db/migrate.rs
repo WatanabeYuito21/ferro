@@ -45,6 +45,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         sql: include_str!("../../migrations/0009_search_filter_indexes.sql"),
     },
+    Migration {
+        version: 10,
+        sql: include_str!("../../migrations/0010_threads.sql"),
+    },
 ];
 
 /// 未適用のマイグレーションを`schema_migrations`テーブルの記録に基づいて適用する。
