@@ -8,7 +8,14 @@
   import ColorRulesView from './ColorRulesView.svelte'
   import LabelRulesView from './LabelRulesView.svelte'
   import { updater, checkForUpdate } from './updater.svelte.js'
-  import { reindexer, runReindex, reindexPercent } from './reindex.svelte.js'
+  import {
+    reindexer,
+    runReindex,
+    reindexPercent,
+    indexStatus,
+    refreshIndexStatus,
+    describeIndexStatus,
+  } from './reindex.svelte.js'
   import { applyAppearance, THEME_OPTIONS, ACCENT_COLOR_OPTIONS, FONT_SIZE_OPTIONS } from './appearance.js'
 
   let {
@@ -73,6 +80,7 @@
     }
   }
   load()
+  refreshIndexStatus()
 
   // 現在保存されているフォント名がインストール済み一覧に無い場合でも
   // （手編集・別環境からの引き継ぎ・一覧取得失敗など）、選択肢から消えて
@@ -234,6 +242,11 @@
         '自動的に拾い直すので、通常は「検索インデックス再構築」を手動で押す必要はありません。',
       keywords: 'sync interval 自動同期 受信 POP3 分',
     },
+    indexStatus: {
+      title: 'インデックスの状態',
+      desc: '検索できるメッセージの件数です。未投入の分は検索結果に出てきません。',
+      keywords: 'index status 投入 件数 未投入 検索できない 取りこぼし',
+    },
     reindex: {
       title: '検索インデックスを再構築',
       desc:
@@ -300,7 +313,7 @@
     },
     display: { title: '表示', keywords: 'display', rows: ROWS.map((row) => row.key) },
     sync: { title: '同期', keywords: 'sync', rows: ['syncInterval'] },
-    search: { title: '検索', keywords: 'search', rows: ['reindex'] },
+    search: { title: '検索', keywords: 'search', rows: ['indexStatus', 'reindex'] },
     retention: {
       title: '保持期間',
       keywords: 'retention',
@@ -530,6 +543,35 @@
     {#if showSection('search')}
       <h2 class="section-title">{SECTIONS.search.title}</h2>
       <div class="rows">
+        {#if showRow('indexStatus')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.indexStatus.title}</div>
+              <div class="desc">{R.indexStatus.desc}</div>
+            </div>
+            <button
+              type="button"
+              class="action-button"
+              onclick={refreshIndexStatus}
+              disabled={indexStatus.loading}
+            >
+              再確認
+            </button>
+          </div>
+          {#if indexStatus.error}
+            <p class="reindex-status"><span class="error">{indexStatus.error}</span></p>
+          {:else if indexStatus.data}
+            {@const s = indexStatus.data}
+            {@const summary = describeIndexStatus(s)}
+            <div class="index-status">
+              <span class="index-status-count">
+                投入済み {s.indexed.toLocaleString()} / {s.total.toLocaleString()} 件
+              </span>
+              <span class="index-status-docs">（索引の文書数 {s.index_docs.toLocaleString()}）</span>
+              <p class="index-status-summary {summary.kind}">{summary.text}</p>
+            </div>
+          {/if}
+        {/if}
         {#if showRow('reindex')}
           <div class="row">
             <div class="text">
@@ -877,6 +919,26 @@
   }
   .reindex-progress .reindex-status {
     padding: 0;
+  }
+  .index-status {
+    padding: 4px 0 8px;
+    font-size: 12.5px;
+    color: var(--text-secondary);
+  }
+  .index-status-count {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .index-status-docs {
+    color: var(--text-muted);
+  }
+  .index-status-summary {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .index-status-summary.warn {
+    color: var(--danger);
   }
   .reindex-status {
     margin: 8px 0 0;

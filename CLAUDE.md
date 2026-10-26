@@ -505,6 +505,12 @@
   なお`logging::log_line`はテストビルドでは何もしない（テストがわざと失敗経路を
   踏むたびに、利用者の本物の`ferro.log`へ書き込んでいた）。
   教訓: 「失敗したらリトライ」の経路に、失敗をログへ残さず長時間待つ箇所を作らないこと。
+  v0.0.25で設定画面「検索」セクションに**インデックスの状態**を追加した
+  （`reindex::index_status`→`get_search_index_status`コマンド。全件数`count_live`・
+  投入済み`count_indexed`・索引の文書数`num_docs`・再構築中か）。取りこぼしに
+  再構築を押す前に気づけるようにするため。全件COUNTを取るので常時ポーリングはせず、
+  設定画面を開いた時・「再確認」・再構築完了時にだけ取り直す
+  （`frontend/src/lib/reindex.svelte.js`の`indexStatus`）。
 - **SQLiteのクエリで`(?1 IS NULL OR col = ?1)`のようなOR分岐を書くと**、インデックスを使った
   範囲検索（SEARCH）ではなくCOVERING SCAN + 一時B-treeソートにフォールバックしやすい。
   新しいクエリを書く際は`EXPLAIN QUERY PLAN`で`SCAN`ではなく`SEARCH`になっているか確認すること。
