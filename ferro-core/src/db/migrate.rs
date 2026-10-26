@@ -57,6 +57,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 12,
         sql: include_str!("../../migrations/0012_rule_notify_muted.sql"),
     },
+    Migration {
+        version: 13,
+        sql: include_str!("../../migrations/0013_unread_inbox_index.sql"),
+    },
 ];
 
 /// 未適用のマイグレーションを`schema_migrations`テーブルの記録に基づいて適用する。

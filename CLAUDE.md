@@ -312,6 +312,16 @@
   CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
   （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
   別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
+- **未読数のバッジ**（v0.0.38、GUIのみ。`src-tauri/src/badge.rs`）: 受信箱の未読数
+  （`messages::count_unread_inbox`）を、トレイアイコン（既定のウィンドウアイコンの右下に赤い札を
+  重ねた画像＋ツールチップ）とタスクバー（Windowsは`set_overlay_icon`、それ以外は
+  `set_badge_count`。WindowsはOSのバッジAPIが無いため）に出す。画像処理のクレートは足さず、
+  3×5ドットの数字を拡大して描くだけ。更新はフロントの`refreshFolderCounts`のたび
+  （`refresh_unread_badge`）、バックグラウンド同期の後、設定の保存時。未読数のCOUNTは
+  `idx_messages_unread_inbox`（migration 0013。受信箱の条件込みの部分インデックス）だけで数える
+  （0009の`idx_messages_unread`では行を読みに行くため実データで0.3秒→0.003秒）。受信箱の条件を
+  変えるときは`append_folder_condition`・このクエリ・インデックスの3つを揃えること。
+  `Settings::show_unread_badge`（既定オン）でオフにできる。
 - **検索語のハイライト**（`ferro_core::search::highlight`、v0.0.37）: 強調する語は
   `query::parse`の全文検索の語のうち否定でないもの（`terms`。GUIは`highlight_terms`コマンド）。
   一致の規則は検索と同じく大文字小文字を無視した部分一致で、同じ位置からなら長い語を優先
