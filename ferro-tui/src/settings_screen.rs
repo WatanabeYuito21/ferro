@@ -59,6 +59,7 @@ enum Item {
     AddAccount,
     Reindex,
     Purge,
+    Optimize,
 }
 
 const THEMES: &[(&str, &str)] = &[("light", "ライト"), ("dark", "ダーク"), ("system", "システムに合わせる")];
@@ -68,7 +69,7 @@ const SYNC_INTERVALS: &[(&str, &str)] =
 
 fn items(app: &App) -> Vec<Item> {
     let mut items = vec![
-        Item::Header("同期・保持期間"),
+        Item::Header("同期・保持期間・ディスク"),
         Item::Choice {
             label: "バックグラウンド自動同期の間隔",
             options: SYNC_INTERVALS,
@@ -90,6 +91,7 @@ fn items(app: &App) -> Vec<Item> {
             set: |s, v| s.server_delete_days = v,
         },
         Item::Purge,
+        Item::Optimize,
         Item::Header("表示・検索"),
         Item::Toggle {
             label: "既読にするまでの時間（2秒表示したら既読）",
@@ -329,6 +331,7 @@ fn activate(app: &mut App, items: &[Item], index: usize) {
         }
         Item::Reindex => app.run_reindex_now(),
         Item::Purge => app.run_purge_now(),
+        Item::Optimize => app.run_optimize_now(),
         Item::Header(_) | Item::ColorRule(_) | Item::Account(_) => {}
     }
 }
@@ -596,6 +599,7 @@ fn item_line<'a>(app: &'a App, item: &'a Item, width: usize) -> Line<'a> {
         Item::AddAccount => Line::styled("  ＋ アカウントを追加", Style::default().fg(Color::Green)),
         Item::Reindex => row("検索インデックスを再構築", "Enter / R".to_string()),
         Item::Purge => row("保持日数を過ぎたメールを今すぐ整理", "Enter / P".to_string()),
+        Item::Optimize => row("ディスクを最適化（DBと検索インデックスを詰める）", "Enter".to_string()),
     }
 }
 
