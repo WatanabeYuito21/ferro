@@ -934,6 +934,30 @@ fn label_rules_config_path() -> String {
     paths::label_rules_config_path().display().to_string()
 }
 
+/// 検索語の強調（`search::highlight`）に使う語。`field`は"any" | "from" | "subject" | "body"。
+#[derive(Serialize)]
+struct HighlightTermView {
+    text: String,
+    field: &'static str,
+}
+
+#[tauri::command]
+fn highlight_terms(query: String) -> Vec<HighlightTermView> {
+    use ferro_core::search::query::TextField;
+    ferro_core::search::highlight::terms(&query)
+        .into_iter()
+        .map(|term| HighlightTermView {
+            text: term.text,
+            field: match term.field {
+                TextField::Any => "any",
+                TextField::From => "from",
+                TextField::Subject => "subject",
+                TextField::Body => "body",
+            },
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct SavedSearchView {
     name: String,
@@ -1700,6 +1724,7 @@ pub fn run() {
             save_message_eml,
             get_message_source,
             list_saved_searches,
+            highlight_terms,
             add_saved_search,
             remove_saved_search,
             set_read,

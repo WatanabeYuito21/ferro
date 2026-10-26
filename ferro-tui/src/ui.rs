@@ -199,9 +199,19 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    // 検索結果から開いている間は、検索語に一致した箇所を強調する。
+    let terms = if app.search_results.is_some() {
+        ferro_core::search::highlight::terms(app.search_input.value())
+    } else {
+        Vec::new()
+    };
+    let needles = |field| ferro_core::search::highlight::needles_for(&terms, field);
+    use ferro_core::search::query::TextField;
+
     let mut lines = Vec::new();
-    lines.push(Line::styled(
-        detail.message.subject.clone().unwrap_or_else(|| "(no subject)".to_string()),
+    lines.push(highlighted_line(
+        detail.message.subject.as_deref().unwrap_or("(no subject)"),
+        &needles(TextField::Subject),
         Style::default().add_modifier(Modifier::BOLD),
     ));
     let from = detail.message.from_name.as_deref().or(detail.message.from_addr.as_deref()).unwrap_or("(unknown)");
@@ -259,12 +269,30 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
     } else {
         detail.body.as_deref().unwrap_or("(本文なし)")
     };
+    let body_needles = if app.show_headers { Vec::new() } else { needles(TextField::Body) };
     for body_line in text.lines() {
-        lines.push(Line::from(body_line.to_string()));
+        lines.push(highlighted_line(body_line, &body_needles, Style::default()));
     }
 
     let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
+}
+
+/// `needles`に一致した箇所を反転表示にした1行。
+fn highlighted_line(text: &str, needles: &[&str], base: Style) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut last = 0;
+    for (start, end) in ferro_core::search::highlight::ranges(text, needles) {
+        if start > last {
+            spans.push(Span::styled(text[last..start].to_string(), base));
+        }
+        spans.push(Span::styled(text[start..end].to_string(), base.fg(Color::Black).bg(Color::Yellow)));
+        last = end;
+    }
+    if last < text.len() || spans.is_empty() {
+        spans.push(Span::styled(text[last..].to_string(), base));
+    }
+    Line::from(spans)
 }
 
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
