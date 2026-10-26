@@ -262,6 +262,8 @@ GitHub Actions（`.github/workflows/release.yml`）が同じバージョンの�
 - CLI（`ferro`）・TUI（`ferro-tui`）バイナリをまとめたアーカイブ（Windows: zip、Linux: tar.gz）
 
 バージョンを上げていないpushではリリースは作られません（同じタグの重複作成を防ぐため）。
+バージョンを上げる際は`Cargo.toml`・`src-tauri/tauri.conf.json`・`frontend/package.json`の3か所を揃えます
+（インストーラー名は`tauri.conf.json`の値で決まるため、ずれているとワークフローがエラーで止まります）。
 
 最新版は[Releasesページ](https://github.com/WatanabeYuito21/ferro/releases/latest)からダウンロードできます。`v0.0.1`が最初のリリースです。
 
