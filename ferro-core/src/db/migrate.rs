@@ -37,6 +37,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         sql: include_str!("../../migrations/0007_purged_uidls.sql"),
     },
+    Migration {
+        version: 8,
+        sql: include_str!("../../migrations/0008_message_id_lookup_index.sql"),
+    },
 ];
 
 /// 未適用のマイグレーションを`schema_migrations`テーブルの記録に基づいて適用する。

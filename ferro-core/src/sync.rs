@@ -9,7 +9,7 @@ use crate::db::now_unix;
 use crate::db::purged_uidls;
 use crate::label_rules::{self, LabelRulesFile};
 use crate::mail::attachments;
-use crate::mail::parse::{make_preview, parse_full};
+use crate::mail::parse::{make_preview, parse_full, raw_header_value};
 use crate::maildir;
 use crate::maildir::hash::fnv1a64;
 use crate::pop3::{Pop3Client, Pop3Error};
@@ -109,6 +109,14 @@ pub fn sync_account_with_limit(
     // 今回はもうUIDLを試さず、最初からRETR後の内容ハッシュを代替uidlとして使う
     // フォールバック経路（`fetch_and_store_by_hash`）に入る。
     let mut uidl_known_unsupported = account.uidl_supported == Some(false);
+    // フォールバック経路の再開位置（`items`上のインデックス）。同一のsync呼び出し内
+    // （再接続をまたぐ間）はDELEを送らないためメッセージ番号が変わらないので、
+    // 切断後は処理済みの続きから再開できる。`None`の間はまだ「取得済みの境界」を
+    // 探していない。`fallback_search_*`はその二分探索の途中経過で、探索中の
+    // 切断でも最初からやり直さずに済むよう再接続をまたいで保持する。
+    let mut fallback_start: Option<usize> = None;
+    let mut fallback_search_lo = 0usize;
+    let mut fallback_search_hi = usize::MAX;
 
     // CONNECT/USER/PASS/UIDLの段階での切断は、以前は`fetch_and_store`中のRETR
     // パイプライン切断と違って即座にエラーを返していた（他人のレンタルサーバー環境で
@@ -163,9 +171,54 @@ pub fn sync_account_with_limit(
                 });
             }
 
-            let take = budget.map_or(items.len(), |b| (b as usize).min(items.len()));
+            let start = match fallback_start {
+                Some(start) => start,
+                None => {
+                    // UIDLが無く新着を事前に絞り込めないため、以前は毎回先頭から
+                    // 全件RETRし直していた。接続1回あたりの通数や時間に上限のある
+                    // サーバー（実際に約27通で必ず切断されるものが存在した）では、
+                    // 取得済みの先頭部分が許容量を食い潰して新着に手が届かなくなる。
+                    // メールは到着順に並び先頭から順に保存されるため、「取得済み」は
+                    // 先頭から連続する範囲になる。その境界を二分探索（1通RETRして
+                    // 既知かを見る）で探し、そこから取得を始める。
+                    let mut lo = fallback_search_lo;
+                    let mut hi = fallback_search_hi.min(items.len());
+                    let mut probe_error = None;
+                    while lo < hi {
+                        let mid = (lo + hi) / 2;
+                        let raw = match client.retr(items[mid].0) {
+                            Ok(raw) => raw,
+                            Err(e) if is_disconnect(&e) => {
+                                probe_error = Some(e);
+                                break;
+                            }
+                            Err(e) => return Err(e.into()),
+                        };
+                        if is_known_by_content(conn, account.id, &raw)? {
+                            lo = mid + 1;
+                        } else {
+                            hi = mid;
+                        }
+                        fallback_search_lo = lo;
+                        fallback_search_hi = hi;
+                    }
+                    if let Some(e) = probe_error {
+                        try_or_reconnect!("RETR", Err::<(), _>(e));
+                    }
+                    // 境界の直前も少し取り直す（並びの前提が多少崩れていても
+                    // 取りこぼしにくくするための安全マージン）。全件取得済みなら不要。
+                    if lo >= items.len() {
+                        items.len()
+                    } else {
+                        lo.saturating_sub(RETR_BATCH_SIZE)
+                    }
+                }
+            };
+            let available = items.len().saturating_sub(start);
+            let take = budget.map_or(available, |b| (b as usize).min(available));
             let target_total = total_fetched + take as u32;
-            let msg_nums: Vec<u32> = items[..take].iter().map(|(num, _)| *num).collect();
+            let msg_nums: Vec<u32> =
+                items[start..start + take].iter().map(|(num, _)| *num).collect();
             let (new_count, attempted, session_broken) = fetch_and_store_by_hash(
                 conn,
                 maildir_base,
@@ -185,10 +238,14 @@ pub fn sync_account_with_limit(
                 *b = b.saturating_sub(attempted);
             }
 
-            // `items.len()`（budgetで絞る前の全件数）を使う。`fetch_and_store`側の
-            // `remaining = pending.len() - fetched_now`と同じ考え方
+            // 次回（再接続時を含む）は処理済みの続きから再開する。
+            let next_start = start + attempted as usize;
+            fallback_start = Some(next_start);
+
+            // `items.len()`（budgetで絞る前の全件数）から処理済み位置までを引く。
+            // `fetch_and_store`側の`remaining = pending.len() - fetched_now`と同じ考え方
             // （budget対象外だった分・切断で未処理だった分の両方を含める）。
-            let remaining = (items.len() - attempted as usize) as u32;
+            let remaining = items.len().saturating_sub(next_start) as u32;
             if !session_broken {
                 return Ok(SyncSummary {
                     fetched: total_fetched,
@@ -596,11 +653,66 @@ fn fetch_and_store(
 /// FNV-1a(64bit)は`ferro_core::maildir::hash`がMaildirのディレクトリ分散に
 /// 使っているのと同じ仕様が固定されたハッシュ関数で、衝突耐性を要する
 /// セキュリティ用途ではなく単なる重複排除用途なのでこれで十分。
-/// `"ferro-hash-v1-"`という接頭辞を付けているのは、(1)サーバー由来の本物の
-/// UIDLと見た目で区別できるようにする、(2)将来ハッシュ方式を変える場合に
+/// `"ferro-hash-v2-"`という接頭辞を付けているのは、(1)サーバー由来の本物の
+/// UIDLと見た目で区別できるようにする、(2)ハッシュ方式を変えた場合に
 /// 版を分けられるようにするため。
+///
+/// v1は生メール全体のハッシュだったが、RETRのたびに経路上のゲートウェイ
+/// （WatchGuard等の`X-WatchGuard-Spam-ID`ヘッダー）が内容を付け替えるサーバーでは
+/// 同じメールが毎回別のハッシュになり、数千件単位で重複保存された。v2は
+/// 取得のたびに変わりうるヘッダーを避け、`Message-ID`があればそれだけから、
+/// 無ければ`Date`/`From`/`Subject`と本文のバイト列から作る。
 fn content_uidl(raw: &[u8]) -> String {
-    format!("ferro-hash-v1-{:016x}", fnv1a64(raw))
+    let key = match raw_message_id(raw) {
+        Some(id) => format!("mid:{id}").into_bytes(),
+        None => {
+            let mut key = b"nomid:".to_vec();
+            for name in ["Date", "From", "Subject"] {
+                key.extend(raw_header_value(raw, name).unwrap_or_default());
+                key.push(0);
+            }
+            key.extend_from_slice(raw_body(raw));
+            key
+        }
+    };
+    format!("ferro-hash-v2-{:016x}", fnv1a64(&key))
+}
+
+/// 生メールの`Message-ID`を`messages.message_id_header`と同じ形（山括弧と
+/// 前後の空白を除いたもの）で取り出す。無い/空ならNone。
+fn raw_message_id(raw: &[u8]) -> Option<String> {
+    let value = raw_header_value(raw, "Message-ID")?;
+    let text = String::from_utf8_lossy(&value);
+    let id = text.trim().trim_start_matches('<').trim_end_matches('>').trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
+/// ヘッダー部と本文部を分ける最初の空行より後ろ。空行が無ければ空。
+fn raw_body(raw: &[u8]) -> &[u8] {
+    let crlf = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
+    let lf = raw.windows(2).position(|w| w == b"\n\n").map(|p| p + 2);
+    match (crlf, lf) {
+        (Some(a), Some(b)) => &raw[a.min(b)..],
+        (Some(a), None) | (None, Some(a)) => &raw[a..],
+        (None, None) => &[],
+    }
+}
+
+/// 取得した生メールが、既に保存済み（または保持期間切れで削除済み）かを判定する。
+/// フォールバック経路（`fetch_and_store_by_hash`）の重複判定と境界探索用。
+/// 内容ハッシュ(v2)に加えて`Message-ID`でも判定するのは、v1ハッシュで保存済みの
+/// 既存メッセージ（v1時代の行）を再取り込みしないため。
+fn is_known_by_content(conn: &Connection, account_id: i64, raw: &[u8]) -> Result<bool, SyncError> {
+    let uidl = content_uidl(raw);
+    if messages::exists_by_uidl(conn, account_id, &uidl)?
+        || purged_uidls::is_purged(conn, account_id, &uidl)?
+    {
+        return Ok(true);
+    }
+    match raw_message_id(raw) {
+        Some(id) => Ok(messages::exists_by_message_id(conn, account_id, &id)?),
+        None => Ok(false),
+    }
 }
 
 /// `msg_nums`をRETR_BATCH_SIZE単位でパイプライン取得し、`fetch_and_store`と
@@ -659,6 +771,10 @@ fn fetch_and_store_by_hash(
             };
 
             let uidl = content_uidl(&raw);
+            if is_known_by_content(&tx, account_id, &raw)? {
+                attempted += 1;
+                continue;
+            }
             if let Some(item) =
                 store_fetched_message(&tx, maildir_base, account_id, &uidl, &raw, label_rules)?
             {

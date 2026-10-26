@@ -257,6 +257,29 @@
   `AppState::manual_syncs`（`ManualSyncGuard`のRAIIカウンタ。ロック待ちの間も数える）が
   0より大きい間は`run_background_sync_once`が次のアカウントの同期を始めず次サイクルに回す。
   フロント側も`manualSyncing`中のアカウントについては`background-sync`イベントを無視する。
+- **UIDL非対応フォールバックの重複保存と再開不能（v0.0.16で修正）**: 経路上の
+  ゲートウェイ（実際に`X-WatchGuard-Spam-ID`ヘッダー）がRETRのたびに内容を付け替える
+  サーバー（`hades.sc2.ne.jp`のアラート用アカウント）では、v1の内容ハッシュ
+  （メール全体のFNV-1a）が毎回変わり、**同じメールが別物として数千回ずつ保存された**
+  （実データで約2千通のMessage-IDが5万行に膨れていた。「fetchedが毎回27通ずつ
+  増える」ように見えていたのもこれ）。さらにそのサーバーは1接続あたり約27通で
+  必ず切断するため、フォールバックが毎回先頭から全件RETRし直す設計だと、取得済みの
+  先頭部分が1接続の許容量を食い潰して新着に手が届かなかった。対策:
+  (1) `content_uidl`をv2（`ferro-hash-v2-`）にし、`Message-ID`があればそれだけから、
+  無ければDate/From/Subject+本文のバイト列から作る（取得のたびに変わりうる
+  ヘッダーを使わない）。重複判定`is_known_by_content`はv2ハッシュに加え
+  `Message-ID`でも既知か見る（v1時代の既存行の再取り込みを避ける。マイグレーション
+  0008の`idx_messages_account_message_id`）。(2) 同一sync呼び出し内の再接続では
+  処理済みの続きから再開し(`fallback_start`)、新しいsync呼び出しの最初に
+  「取得済みの境界」を二分探索（1通RETRして既知か判定）で探してそこから取る
+  （メールは到着順で先頭から連続して保存される前提。境界の手前
+  `RETR_BATCH_SIZE`件は安全マージンとして取り直す）。(3) 既存の重複は
+  `ferro dedupe`（既定は件数表示のみ、`--apply`で削除）で整理する。対象は
+  `uidl_supported=0`のアカウントだけ（UIDL対応アカウントでは同じMessage-IDの別
+  メッセージが正当に存在しうるうえ、行を消すと次回syncが再取得するため）。
+  残す行は最小idで、削除する行の既読/スター/ラベルを引き継ぐ。
+  ※ GUI等がTantivyインデックスを開いている間はCLIは起動できない
+  （上記ロックの項参照）ため、`ferro dedupe`はGUI/TUIを閉じてから実行する。
 - **リリース自動化**（`.github/workflows/release.yml`）: `main`へのpush毎に起動するが、
   実際にビルド・GitHub Releaseを作るのはルート`Cargo.toml`の`workspace.package.version`
   に対応するタグ（`vX.Y.Z`）がまだ`origin`に存在しない場合のみ（`git ls-remote --tags origin`で

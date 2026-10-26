@@ -83,7 +83,7 @@ fn try_decode_legacy_japanese(bytes: &[u8]) -> Option<String> {
 /// RFC 822の全ての例外（folding以外の変則的な書式等）を厳密に処理する必要は無い
 /// （抽出に失敗すれば単に救済しないだけで、mail-parser側の結果がそのまま使われる
 /// ため悪化はしない）。
-fn raw_header_value(raw: &[u8], name: &str) -> Option<Vec<u8>> {
+pub(crate) fn raw_header_value(raw: &[u8], name: &str) -> Option<Vec<u8>> {
     let name_bytes = name.as_bytes();
     let mut pos = 0usize;
 

@@ -114,6 +114,10 @@ ferro delete <message_id>
 # 全メッセージから検索インデックスを作り直す
 ferro reindex
 
+# UIDL非対応アカウントの重複メッセージを検出（既定は件数表示のみ。--applyで削除。GUI/TUIを閉じて実行）
+ferro dedupe
+ferro dedupe --apply
+
 # ラベル一覧（作成/削除はGUI限定）
 ferro label list
 
