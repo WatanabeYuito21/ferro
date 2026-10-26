@@ -12,6 +12,7 @@
   import { applyPatch, neighborId, clickSelection, toggleChecked } from './lib/messageView.js'
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
+  import { highlightSegments, needlesFor } from './lib/highlight.js'
   import { applyAppearance } from './lib/appearance.js'
   import {
     updater,
@@ -717,9 +718,17 @@
     searchDebounceTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS)
   }
 
+  // 検索結果の一覧と本文で強調する語（`highlight_terms`）。検索のたびに取り直す。
+  let searchHighlightTerms = []
+
   async function runSearch(query) {
     const requestId = ++searchRequestId
     clearChecked()
+    invoke('highlight_terms', { query })
+      .then((terms) => {
+        if (requestId === searchRequestId) searchHighlightTerms = terms
+      })
+      .catch(() => {})
     try {
       const results = await invoke('search_messages', {
         query,
@@ -959,8 +968,16 @@
                             checked={checkedIds.has(message.id)}
                             on:click|stopPropagation={() => setChecked(toggleChecked(checkedIds, message.id), message.id)}
                           />
-                          <span class="from" style={rowColor ? `color: ${rowColor}` : ''}>{message.from_name ?? message.from_addr ?? '(unknown sender)'}{#if message.thread_size > 1}<span class="thread-count"> ({message.thread_size})</span>{/if}</span>
-                          <span class="subject" style={rowColor ? `color: ${rowColor}` : ''}>{message.subject ?? '(no subject)'}</span>
+                          <span class="from" style={rowColor ? `color: ${rowColor}` : ''}
+                            >{#each highlightSegments(message.from_name ?? message.from_addr ?? '(unknown sender)', needlesFor(searchHighlightTerms, 'from')) as segment, i (i)}{#if segment.match}<mark
+                                  >{segment.text}</mark
+                                >{:else}{segment.text}{/if}{/each}{#if message.thread_size > 1}<span class="thread-count"> ({message.thread_size})</span>{/if}</span
+                          >
+                          <span class="subject" style={rowColor ? `color: ${rowColor}` : ''}
+                            >{#each highlightSegments(message.subject ?? '(no subject)', needlesFor(searchHighlightTerms, 'subject')) as segment, i (i)}{#if segment.match}<mark
+                                  >{segment.text}</mark
+                                >{:else}{segment.text}{/if}{/each}</span
+                          >
                           <span class="date">{formatDate(message.date_header)}</span>
                         </div>
                       </li>
@@ -993,6 +1010,7 @@
                     onClose={() => (selectedMessageId = null)}
                     onChanged={handleMessagePatched}
                     onOpenMessage={(id) => (selectedMessageId = id)}
+                    highlightTerms={searchResults !== null ? searchHighlightTerms : []}
                   />
                 </div>
               {/if}
@@ -1090,6 +1108,11 @@
     font: inherit;
     font-size: 12.5px;
     cursor: pointer;
+  }
+  .search-results mark {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    color: inherit;
+    border-radius: 2px;
   }
   .search-spinner {
     color: var(--text-muted);
