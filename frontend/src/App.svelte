@@ -1,7 +1,7 @@
 <script>
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
-  import { onDestroy, onMount } from 'svelte'
+  import { onDestroy, onMount, tick } from 'svelte'
   import MessageList from './lib/MessageList.svelte'
   import MessageDetail from './lib/MessageDetail.svelte'
   import Sidebar from './lib/Sidebar.svelte'
@@ -9,6 +9,7 @@
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
   import { applyAppearance } from './lib/appearance.js'
+  import { checkForUpdate } from './lib/updater.svelte.js'
 
   // Add account/Account listはメニューバー(View > Manage Accounts…)から開く
   // 別画面として切り出している（`navigate`イベントで切り替える。下のonMount参照）。
@@ -192,6 +193,7 @@
   let unlistenBackgroundSync
   let unlistenSyncProgress
   let unlistenNavigate
+  let unlistenCheckForUpdate
   let unlistenRetentionPurge
 
   onMount(async () => {
@@ -246,6 +248,24 @@
       currentView = event.payload
     })
 
+    // メニューバー(View > Check for Updates…)。進捗・結果は設定画面の
+    // 「アップデート」セクションに出すので、そこへ移動してから確認を始める。
+    unlistenCheckForUpdate = await listen('check-for-update', async () => {
+      currentView = 'settings'
+      checkForUpdate()
+      // 「アップデート」セクションは設定の読み込み(非同期)が終わってから描画されるので、
+      // 現れるまで少し待ってからスクロールする。
+      for (let i = 0; i < 20; i++) {
+        await tick()
+        const section = document.getElementById('update-section')
+        if (section) {
+          section.scrollIntoView({ block: 'start' })
+          break
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    })
+
     // バックグラウンドのメール保持期間クリーンアップ(`spawn_retention_cleanup`)が
     // 何か削除した時に発火する。一覧の再読み込みまではしない（頻度は低いが、
     // 読んでいる最中に一覧のスクロール位置が急に変わる方が煩わしいため。
@@ -259,6 +279,7 @@
     unlistenBackgroundSync?.()
     unlistenSyncProgress?.()
     unlistenNavigate?.()
+    unlistenCheckForUpdate?.()
     unlistenRetentionPurge?.()
   })
 

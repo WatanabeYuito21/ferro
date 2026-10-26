@@ -271,7 +271,7 @@ GitHub Actions（`.github/workflows/release.yml`）が同じバージョンの�
 
 ### 自動アップデート（GUI版）
 
-設定画面の「アップデート」→「更新を確認」で、最新のGitHub Releaseの`latest.json`を見て、
+設定画面の「アップデート」→「更新を確認」（またはメニューバーの View > Check for Updates…）で、最新のGitHub Releaseの`latest.json`を見て、
 新しいバージョンがあれば署名を検証した上でダウンロード・インストールし、Ferroを再起動します
 （Tauri公式の`tauri-plugin-updater`。Windows: NSIS、Linux: AppImageが対象で、MSI/debは対象外）。
 起動時の自動確認はせず、ボタンを押したときだけ動きます。CLI/TUIは対象外です。
