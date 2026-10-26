@@ -1,4 +1,5 @@
-//! 受信時に自動でラベルを付与するルールをTOMLファイルで管理する。
+//! 受信時に自動でラベルを付与する（v0.0.35からは既読にする・アーカイブする・スターを付ける・
+//! 通知しない、も指定できる）ルールをTOMLファイルで管理する。
 //! `color_rules.rs`と同じ構造（正の情報源はファイル、DBテーブルへのreconcileは無い）だが、
 //! こちらは実際にDBの`message_labels`へ書き込む（表示だけの色分けと違い、ラベル付与は
 //! 永続状態の変更）。
@@ -23,15 +24,56 @@ use crate::mail::parse::extract_plain_text_body;
 use crate::maildir;
 use crate::message_filter::MessageFilter;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LabelRule {
     /// 付与するラベルの名前。`labels.name`はUNIQUE制約済み（migration 0003）なので
     /// 自然キーとして安全に使える。ラベルがリネーム/削除されて解決できなくなった
     /// ルールは（`accounts.toml`のアカウントと違い）自動削除も警告もせず、単に
-    /// 何も付与しないルールとして静かにスキップする。
+    /// 何も付与しないルールとして静かにスキップする。空ならラベルは付けない
+    /// （既読にする等の動作だけのルール）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label_name: String,
     #[serde(flatten)]
     pub filter: MessageFilter,
+    #[serde(flatten)]
+    pub actions: RuleActions,
+}
+
+impl LabelRule {
+    /// ラベルか動作のどちらかを指定しているか（どちらも無いルールは何もしない）。
+    pub fn has_effect(&self) -> bool {
+        !self.label_name.is_empty() || !self.actions.is_empty()
+    }
+}
+
+/// ラベル以外にルールが当たったメッセージへ行う動作。どれも「立てる」だけで、外すことはしない
+/// （後から手で未読に戻したものを「今すぐ適用」がまた既読にすることはあるが、ルールの
+/// 条件から外れても元に戻しはしない）。既定はすべてfalseで、TOMLには立てたものだけを書く。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuleActions {
+    /// 既読にする（既読のメールは新着通知も出さない。`new_mail::since`）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mark_read: bool,
+    /// アーカイブする（受信箱に出さない）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub archive: bool,
+    /// スターを付ける。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub star: bool,
+    /// 新着のデスクトップ通知を出さない（受信時だけ意味を持つ。未読のまま残したいが
+    /// 通知は要らない定期レポート等向け）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skip_notification: bool,
+}
+
+impl RuleActions {
+    pub fn is_empty(&self) -> bool {
+        !(self.mark_read || self.archive || self.star || self.skip_notification)
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -56,6 +98,8 @@ pub enum LabelRulesError {
     IndexOutOfRange(usize),
     #[error(transparent)]
     Db(#[from] rusqlite::Error),
+    #[error("ラベルか動作（既読にする・アーカイブする等）を1つ以上指定してください")]
+    NoEffect,
 }
 
 /// 設定ファイルを読み込む。存在しない場合は空扱い（`color_rules::load`と同じ理由）。
@@ -83,8 +127,12 @@ pub fn save(path: &Path, file: &LabelRulesFile) -> Result<(), LabelRulesError> {
     Ok(())
 }
 
-/// ルールを1件追記して保存する。GUIの「追加」ボタンから呼ぶ。
+/// ルールを1件追記して保存する。GUIの「追加」ボタンから呼ぶ。条件が空かどうかは
+/// 呼び出し側が確かめる（エラーの文言をGUI/CLIそれぞれに合わせるため）。
 pub fn add(path: &Path, rule: LabelRule) -> Result<LabelRulesFile, LabelRulesError> {
+    if !rule.has_effect() {
+        return Err(LabelRulesError::NoEffect);
+    }
     let mut file = load(path)?;
     file.rules.push(rule);
     save(path, &file)?;
@@ -103,35 +151,48 @@ pub fn remove(path: &Path, index: usize) -> Result<LabelRulesFile, LabelRulesErr
     Ok(file)
 }
 
-/// 1件の新着メッセージにマッチするルールのラベル名一覧を返す（sync時に呼ぶ）。
-pub fn matching_label_names<'a>(
+/// 1件のメッセージにマッチするルールを返す（sync時と「今すぐ適用」の両方で使う）。
+pub fn matching_rules<'a>(
     rules: &'a LabelRulesFile,
     subject: &str,
     from: &str,
     body: &str,
     has_attachment: bool,
-) -> Vec<&'a str> {
+) -> Vec<&'a LabelRule> {
     rules
         .rules
         .iter()
         .filter(|rule| rule.filter.matches(subject, from, body, has_attachment))
-        .map(|rule| rule.label_name.as_str())
         .collect()
 }
 
-/// `matching_label_names`で得たラベル名を実際にメッセージへ付与する。ラベル名が
-/// 解決できない（リネーム/削除済み）場合は静かにスキップする。
-pub fn apply_matching_labels(
+/// `matching_rules`で得たルールのラベルと動作を実際にメッセージへ当てる。ラベル名が
+/// 解決できない（リネーム/削除済み）場合は静かにスキップする。`on_receive`（sync時）の
+/// 時だけ「通知しない」を当てる（受信済みのメールには通知がもう関係ないため）。
+/// ラベル・既読・アーカイブ・スターのどれかが実際に変わったらtrue。
+pub fn apply_rules(
     conn: &Connection,
     message_id: i64,
-    label_names: &[&str],
-) -> Result<(), LabelRulesError> {
-    for name in label_names {
-        if let Some(label) = labels::find_by_name(conn, name)? {
-            labels::set_on_message(conn, message_id, label.id, true)?;
+    matched: &[&LabelRule],
+    on_receive: bool,
+) -> Result<bool, LabelRulesError> {
+    let mut changed = false;
+    for rule in matched {
+        if !rule.label_name.is_empty()
+            && let Some(label) = labels::find_by_name(conn, &rule.label_name)?
+        {
+            changed |= labels::add_to_message(conn, message_id, label.id)?;
         }
     }
-    Ok(())
+    let any = |f: fn(&RuleActions) -> bool| matched.iter().any(|rule| f(&rule.actions));
+    let (mark_read, archive, star) = (any(|a| a.mark_read), any(|a| a.archive), any(|a| a.star));
+    if mark_read || archive || star {
+        changed |= messages::apply_rule_flags(conn, message_id, mark_read, archive, star)?;
+    }
+    if on_receive && any(|a| a.skip_notification) {
+        messages::mute_notification(conn, message_id)?;
+    }
+    Ok(changed)
 }
 
 const BACKFILL_PAGE_SIZE: u32 = 1000;
@@ -145,9 +206,11 @@ const BACKFILL_PAGE_SIZE: u32 = 1000;
 /// 1件でも本文条件があれば、そのメッセージだけMaildirから読み直して本文を取り出す
 /// （`reindex_all`同様、Maildirに実体が無い＝削除済み等のメッセージは静かにスキップする）。
 ///
-/// 戻り値は新たに付与した(message, label)組の件数（既に付与済みだった分は
-/// `INSERT OR IGNORE`で数えない。`db::labels::set_on_message`の戻り値からは
-/// 増分がわからないため、事前に付いていたラベル集合と比較して数える）。
+/// ラベルだけでなく既読にする・アーカイブする・スターを付ける、も当てる（「通知しない」は
+/// 受信済みのメールには関係ないので当てない）。
+///
+/// 戻り値は何かが変わったメッセージの件数（既にラベルが付いていた・既読だった等で
+/// 何も変わらなかったものは数えない）。
 pub fn apply_all(
     conn: &Connection,
     maildir_base: &Path,
@@ -183,7 +246,7 @@ pub fn apply_all(
             };
             let has_attachment = message.attachment_count > 0;
 
-            let matched = matching_label_names(
+            let matched = matching_rules(
                 rules,
                 message.subject.as_deref().unwrap_or(""),
                 &from,
@@ -193,11 +256,9 @@ pub fn apply_all(
             if matched.is_empty() {
                 continue;
             }
-
-            let before = labels::for_message(conn, message.id)?;
-            apply_matching_labels(conn, message.id, &matched)?;
-            let after = labels::for_message(conn, message.id)?;
-            applied += after.len().saturating_sub(before.len());
+            if apply_rules(conn, message.id, &matched, false)? {
+                applied += 1;
+            }
         }
     }
 
@@ -213,7 +274,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn rule(label_name: &str, filter: MessageFilter) -> LabelRule {
-        LabelRule { label_name: label_name.to_string(), filter }
+        LabelRule { label_name: label_name.to_string(), filter, actions: RuleActions::default() }
     }
 
     #[test]
@@ -429,5 +490,94 @@ mod tests {
         let applied = apply_all(&conn, maildir_dir.path(), &rules).unwrap();
         assert_eq!(applied, 1);
         assert_eq!(labels::for_message(&conn, message_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn actions_roundtrip_and_old_files_still_load() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("label_rules.toml");
+        // 動作の項目が無い（0.0.34以前の）ファイルもそのまま読める。
+        fs::write(&path, "[[rule]]\nlabel_name = \"A\"\nsubject_contains = \"x\"\n").unwrap();
+        assert_eq!(
+            load(&path).unwrap().rules,
+            vec![rule("A", MessageFilter { subject_contains: Some("x".into()), ..Default::default() })]
+        );
+
+        let file = LabelRulesFile {
+            rules: vec![LabelRule {
+                label_name: String::new(),
+                filter: MessageFilter { from_contains: Some("nagios@".into()), ..Default::default() },
+                actions: RuleActions { mark_read: true, archive: true, ..Default::default() },
+            }],
+        };
+        save(&path, &file).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("label_name") && !text.contains("star"), "{text}");
+        assert_eq!(load(&path).unwrap(), file);
+    }
+
+    #[test]
+    fn add_rejects_a_rule_that_does_nothing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("label_rules.toml");
+        let no_effect = rule("", MessageFilter { subject_contains: Some("x".into()), ..Default::default() });
+        assert!(matches!(add(&path, no_effect), Err(LabelRulesError::NoEffect)));
+        assert!(!path.exists());
+    }
+
+    fn insert_message(conn: &Connection, account_id: i64, uidl: &str, subject: &str) -> i64 {
+        db_messages::insert_new(
+            conn,
+            &NewMessage {
+                account_id,
+                uidl,
+                message_id_header: None,
+                subject: Some(subject),
+                from_name: None,
+                from_addr: None,
+                to_addr: None,
+                date_header: 100,
+                size_bytes: 0,
+                attachment_count: 0,
+                preview: None,
+            },
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn apply_all_marks_read_archives_and_stars_and_counts_changed_messages() {
+        let conn = open_in_memory().unwrap();
+        let maildir_dir = tempdir().unwrap();
+        let account_id = make_account(&conn);
+        let ok = insert_message(&conn, account_id, "u1", "[OK] backup finished");
+        let ng = insert_message(&conn, account_id, "u2", "[NG] backup failed");
+        let rules = LabelRulesFile {
+            rules: vec![
+                LabelRule {
+                    filter: MessageFilter { subject_contains: Some("[OK]".into()), ..Default::default() },
+                    actions: RuleActions { mark_read: true, archive: true, skip_notification: true, ..Default::default() },
+                    ..Default::default()
+                },
+                LabelRule {
+                    filter: MessageFilter { subject_contains: Some("[NG]".into()), ..Default::default() },
+                    actions: RuleActions { star: true, ..Default::default() },
+                    ..Default::default()
+                },
+            ],
+        };
+
+        assert_eq!(apply_all(&conn, maildir_dir.path(), &rules).unwrap(), 2);
+        let ok = db_messages::get(&conn, ok).unwrap().unwrap();
+        assert!(ok.is_read && ok.is_archived && !ok.is_flagged);
+        let ng = db_messages::get(&conn, ng).unwrap().unwrap();
+        assert!(!ng.is_read && !ng.is_archived && ng.is_flagged);
+        // 2回目は何も変わらない。「通知しない」は受信済みのメールには当てない
+        // （既読にした[OK]は通知の対象外、[NG]は対象のまま。[OK]を未読に戻すと対象に戻る）。
+        assert_eq!(apply_all(&conn, maildir_dir.path(), &rules).unwrap(), 0);
+        assert_eq!(crate::new_mail::since(&conn, 0, &[], 5).unwrap().count, 1);
+        db_messages::set_read(&conn, ok.id, false).unwrap();
+        assert_eq!(crate::new_mail::since(&conn, 0, &[], 5).unwrap().count, 2);
     }
 }
