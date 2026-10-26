@@ -13,6 +13,7 @@ pub mod mail;
 pub mod maildir;
 pub mod message_actions;
 pub mod message_filter;
+pub mod message_search;
 pub mod paths;
 pub mod pop3;
 pub mod reindex;

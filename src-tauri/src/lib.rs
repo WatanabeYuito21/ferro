@@ -888,11 +888,25 @@ async fn sync_account(
     .map_err(|e| e.to_string())?
 }
 
-/// 全文検索インデックスを検索し、ヒットしたメッセージをスコア順に返す。
+/// 検索欄の文字列で検索し（`from:`/`has:attachment`/`before:`等の詳細検索の書式も
+/// 受け付ける。`ferro_core::search::query`参照）、受信日時の新しい順に返す。
+/// `utc_offset_seconds`は利用者のタイムゾーン（`after:`/`before:`の日付の区切り）。
 #[tauri::command(async)]
-fn search_messages(state: State<AppState>, query: String, limit: usize) -> Result<Vec<MessageView>, String> {
-    let ids = state.search_index.search(&query, limit).map_err(|e| e.to_string())?;
+fn search_messages(
+    state: State<AppState>,
+    query: String,
+    limit: usize,
+    utc_offset_seconds: Option<i64>,
+) -> Result<Vec<MessageView>, String> {
     let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
+    let ids = ferro_core::message_search::search_query(
+        &conn,
+        &state.search_index,
+        &query,
+        utc_offset_seconds.unwrap_or(0),
+        limit,
+    )
+    .map_err(|e| e.to_string())?;
     let mut messages = Vec::with_capacity(ids.len());
     for id in ids {
         if let Some(m) = db::messages::get(&conn, id).map_err(|e| e.to_string())? {

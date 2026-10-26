@@ -385,7 +385,7 @@ pub fn list_by_folder(
 
 /// `sql`は末尾が"WHERE "で終わっている前提で、フォルダ条件をそこに追記する
 /// （`build_folder_query`/`build_folder_count_query`で共有する）。
-fn append_folder_condition(
+pub(crate) fn append_folder_condition(
     sql: &mut String,
     params: &mut Vec<Box<dyn ToSql>>,
     folder: Folder,
