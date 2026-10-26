@@ -231,6 +231,12 @@
   `ferro-tui/src/background.rs`参照）。設定画面は現状「表示のみ」（トグル/数値の
   編集、色分けルールの追加/削除、アカウント管理フォームは未実装。フォーム入力が
   要るこれらは今後のフェーズで対応予定）。
+- **.eml書き出し**（`ferro_core::mail::export`、v0.0.26）: Maildirのファイル自体が既に
+  RFC 5322の生メールなので、変換はせずバイト列をそのまま書き出す。GUIは本文表示の
+  「.emlとして保存…」（`save_message_eml`コマンド＋`tauri-plugin-dialog`の保存ダイアログ）、
+  CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
+  （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
+  別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
 - Windowsインストーラー（MSI/NSIS）のビルドも確認済み。`cargo install tauri-cli --version "^2"`で
   `cargo tauri`コマンドを導入した上で`cargo tauri build`を実行する（WiX/NSISは未導入でも
   tauri-bundlerが自動取得する）。成果物は`target/release/bundle/{msi,nsis}/`

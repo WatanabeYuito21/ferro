@@ -14,6 +14,7 @@ use ferro_core::db::messages::{Folder, Message};
 use ferro_core::db::{self, Connection};
 use ferro_core::label_rules::{self, LabelRule};
 use ferro_core::mail::attachments::{self, AttachmentInfo};
+use ferro_core::mail::export;
 use ferro_core::mail::parse::extract_plain_text_body;
 use ferro_core::message_filter::MessageFilter;
 use ferro_core::search::SearchIndex;
@@ -262,6 +263,8 @@ struct MessageDetailView {
     labels: Vec<LabelView>,
     body: Option<String>,
     attachments: Vec<AttachmentView>,
+    /// 「.emlとして保存」の保存ダイアログで既定にするファイル名。
+    eml_filename: String,
 }
 
 /// メッセージのDB行とMaildir上の生バイト列を両方取ってくる。
@@ -282,6 +285,7 @@ fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<Message
     let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
     let (message, raw) = load_message_and_raw(&conn, message_id)?;
     let labels = db::labels::for_message(&conn, message_id).map_err(|e| e.to_string())?;
+    let eml_filename = export::suggested_eml_filename(message.subject.as_deref(), message.id);
 
     Ok(MessageDetailView {
         id: message.id,
@@ -299,7 +303,18 @@ fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<Message
             .into_iter()
             .map(AttachmentView::from)
             .collect(),
+        eml_filename,
     })
+}
+
+/// メッセージを`.eml`（Maildirに保存している生のバイト列そのまま）として、
+/// フロント側の保存ダイアログで選んだ`destination_path`に書き出す。
+#[tauri::command(async)]
+fn save_message_eml(state: State<AppState>, message_id: i64, destination_path: String) -> Result<(), String> {
+    let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
+    let (_message, raw) = load_message_and_raw(&conn, message_id)?;
+    drop(conn);
+    std::fs::write(&destination_path, raw).map_err(|e| e.to_string())
 }
 
 /// 検索インデックスの初回再構築（`spawn_initial_search_catchup`）やバックグラウンド
@@ -1324,6 +1339,7 @@ pub fn run() {
             purge_expired_messages,
             get_message_detail,
             save_attachment,
+            save_message_eml,
             set_read,
             set_flagged,
             set_deleted,
