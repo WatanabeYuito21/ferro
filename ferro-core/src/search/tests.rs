@@ -324,6 +324,87 @@ fn empty_writer_slot_is_recreated_on_next_write() {
     assert_eq!(index.search("recovered", 10).unwrap(), vec![1]);
 }
 
+/// 次に作られる`.pos`ファイルの書き込みオープンを1回だけ`PermissionDenied`で失敗させる
+/// ディレクトリ。Windows実機でセグメントファイルの作成が拒否されてtantivyの
+/// ワーカースレッドが死んだ状況を再現する。
+#[derive(Clone, Debug)]
+struct FlakyDirectory {
+    inner: tantivy::directory::RamDirectory,
+    fail_next_pos_write: std::sync::Arc<AtomicBool>,
+}
+
+impl tantivy::Directory for FlakyDirectory {
+    fn get_file_handle(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<std::sync::Arc<dyn tantivy::directory::FileHandle>, tantivy::directory::error::OpenReadError>
+    {
+        self.inner.get_file_handle(path)
+    }
+    fn delete(&self, path: &Path) -> std::result::Result<(), tantivy::directory::error::DeleteError> {
+        self.inner.delete(path)
+    }
+    fn exists(&self, path: &Path) -> std::result::Result<bool, tantivy::directory::error::OpenReadError> {
+        self.inner.exists(path)
+    }
+    fn open_write(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<tantivy::directory::WritePtr, tantivy::directory::error::OpenWriteError> {
+        if path.extension().is_some_and(|ext| ext == "pos") && self.fail_next_pos_write.swap(false, Ordering::SeqCst) {
+            return Err(tantivy::directory::error::OpenWriteError::wrap_io_error(
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                path.to_path_buf(),
+            ));
+        }
+        self.inner.open_write(path)
+    }
+    fn atomic_read(&self, path: &Path) -> std::result::Result<Vec<u8>, tantivy::directory::error::OpenReadError> {
+        self.inner.atomic_read(path)
+    }
+    fn atomic_write(&self, path: &Path, data: &[u8]) -> std::io::Result<()> {
+        self.inner.atomic_write(path, data)
+    }
+    fn sync_directory(&self) -> std::io::Result<()> {
+        self.inner.sync_directory()
+    }
+    fn watch(&self, watch_callback: tantivy::directory::WatchCallback) -> tantivy::Result<tantivy::directory::WatchHandle> {
+        self.inner.watch(watch_callback)
+    }
+}
+
+/// writerのワーカースレッドが死んで`index_message`（`add_document`）が失敗したら、
+/// その場でwriterを作り直し、次の投入から元どおり使えるようになる。以前は
+/// 作り直しがcommit失敗時だけだったため、以後の`index_message`が全て
+/// "index writer was killed"で失敗し続け、再構築が0件のまま止まった。
+#[test]
+fn index_message_recreates_the_writer_after_its_worker_dies() {
+    let fail_next_pos_write = std::sync::Arc::new(AtomicBool::new(false));
+    let dir = FlakyDirectory {
+        inner: tantivy::directory::RamDirectory::create(),
+        fail_next_pos_write: fail_next_pos_write.clone(),
+    };
+    let (schema, fields) = build_schema();
+    let index = Index::create(dir, schema, tantivy::IndexSettings::default()).unwrap();
+    let index = SearchIndex::from_index(index, fields).unwrap();
+
+    // 次のセグメントの作成を失敗させ、ワーカーが死んで`index_message`が
+    // 失敗するまで投入する（ワーカーは非同期に死ぬので、最初の数件は通りうる）。
+    fail_next_pos_write.store(true, Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut id = 1;
+    while index.index_message(&sample(id, "lost", "from", "body")).is_ok() {
+        assert!(std::time::Instant::now() < deadline, "the index writer worker never died");
+        std::thread::sleep(Duration::from_millis(10));
+        id += 1;
+    }
+
+    // 作り直されたwriterで、リトライ無しにそのまま投入・commitできる。
+    index.index_message(&sample(1000, "recovered", "from", "body")).unwrap();
+    index.commit().unwrap();
+    assert_eq!(index.search("recovered", 10).unwrap(), vec![1000]);
+}
+
 #[test]
 fn begin_rebuild_rejects_a_second_rebuild_until_the_first_ends() {
     let index = SearchIndex::create_in_ram().unwrap();

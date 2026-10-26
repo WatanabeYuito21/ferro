@@ -1040,7 +1040,8 @@ fn spawn_initial_search_catchup(app_handle: AppHandle) {
                     std::thread::sleep(Duration::from_millis(200));
                 }
                 // Tantivy側のcrashは`catch_up_unindexed`内で1件ずつのフォールバックまで
-                // 吸収済みなので、ここに来るのはSQLite側の失敗(ロック競合等)のみ。
+                // 吸収済みなので、ここに来るのはSQLite側の失敗(ロック競合等)か、
+                // writerが作り直しても使えないままの場合（`ferro.log`に記録される）。
                 // after_idは据え置いたまま少し待って次回同じ位置からやり直す。
                 Err(_) => std::thread::sleep(Duration::from_secs(2)),
             }

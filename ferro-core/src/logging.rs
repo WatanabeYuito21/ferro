@@ -22,6 +22,10 @@ use crate::paths::log_path;
 /// 診断ログに1行追記する。書き込み失敗（ディスクフルや権限エラー等）は
 /// 無視する。
 pub fn log_line(line: &str) {
+    // テストは失敗経路をわざと踏むので、利用者の本物のログを汚さない。
+    if cfg!(test) {
+        return;
+    }
     let path = log_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

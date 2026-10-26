@@ -331,17 +331,41 @@ impl SearchIndex {
     /// メッセージを索引化する。既に同じidの文書があれば置き換える
     /// （tantivyには更新という概念がないため削除してから追加する）。
     /// 呼び出し側でバッチ単位に`commit`をまとめること。
+    ///
+    /// `add_document`が失敗するのは、writerのワーカースレッドが既に死んでいる
+    /// （"An index writer was killed"）場合だけ。Windows実機では新しいセグメント
+    /// ファイルの作成が`PermissionDenied`で失敗してワーカーが死ぬことがある
+    /// （実データ7万件の投入で再現した）。以前はここで失敗してもwriterを作り直さず、
+    /// 作り直しは`commit`失敗時にしか行わなかったため、バッチがcommitまで
+    /// 到達できず以後の投入が全て同じエラーで失敗し続けた。しかもログも出さずに
+    /// `with_commit_retry`の待機と1件ずつのフォールバックを延々と繰り返し、
+    /// 再構築が「0件のまま進まない」ように見えた（v0.0.22/v0.0.23で実際に踏んだ）。
     pub fn index_message(&self, message: &IndexableMessage) -> Result<()> {
-        let slot = self.writer_slot()?;
-        let writer = slot.as_ref().ok_or(SearchError::WriterUnavailable)?;
+        let mut slot = self.writer_slot()?;
+        let writer = slot.as_mut().ok_or(SearchError::WriterUnavailable)?;
         writer.delete_term(Term::from_field_u64(self.fields.id, message.id as u64));
-        writer.add_document(doc!(
+        let added = writer.add_document(doc!(
             self.fields.id => message.id as u64,
             self.fields.subject => message.subject,
             self.fields.from => message.from,
             self.fields.body => message.body,
             self.fields.date_header => message.date_header as u64,
-        ))?;
+        ));
+        if let Err(e) = added {
+            // `add_document`のエラーは「killed」としか言わない。commitは死んだ
+            // ワーカースレッドをjoinしてその実際のエラー（IOエラー等）を返すので、
+            // 原因をログに残すためだけに呼ぶ（どのみち直後に作り直す）。
+            let cause = match writer.commit() {
+                Err(cause) => cause.to_string(),
+                Ok(_) => e.to_string(),
+            };
+            crate::logging::log_line(&format!(
+                "search: index writer died while adding a document, recreating it: {cause}"
+            ));
+            drop(slot);
+            let _ = self.recover_writer();
+            return Err(e.into());
+        }
         Ok(())
     }
 
