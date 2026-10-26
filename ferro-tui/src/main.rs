@@ -7,6 +7,7 @@ mod app;
 mod background;
 mod colors;
 mod keymap;
+mod settings_screen;
 mod ui;
 
 use std::io::stdout;

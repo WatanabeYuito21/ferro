@@ -25,7 +25,7 @@ pub fn render(f: &mut Frame, app: &App) {
 
     match app.screen {
         Screen::Messages => render_messages_screen(f, app, rows[0]),
-        Screen::Settings => render_settings_screen(f, app, rows[0]),
+        Screen::Settings => crate::settings_screen::render(f, app, rows[0]),
     }
     render_status_bar(f, app, rows[1]);
 
@@ -241,80 +241,6 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-fn render_settings_screen(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("設定（R:検索インデックス再構築 P:今すぐ整理する Esc:戻る。数値/ルール編集は今後対応予定）");
-    let mut lines = vec![
-        Line::styled(
-            format!("Ferro v{}", env!("CARGO_PKG_VERSION")),
-            Style::default().add_modifier(Modifier::DIM),
-        ),
-        Line::from(""),
-        Line::styled("表示", Style::default().add_modifier(Modifier::BOLD)),
-        Line::from(format!(
-            "  一覧のプレビュー行: {}",
-            if app.settings.show_preview_line { "ON" } else { "OFF" }
-        )),
-        Line::from(format!(
-            "  既読にするまでの時間: {}",
-            if app.settings.mark_read_delay { "ON" } else { "OFF" }
-        )),
-        Line::from(""),
-        Line::styled("同期・保持期間", Style::default().add_modifier(Modifier::BOLD)),
-        Line::from(format!("  バックグラウンド自動同期の間隔: {}分", app.settings.sync_interval_minutes)),
-        Line::from(format!(
-            "  メールの保持日数: {}",
-            if app.settings.retention_days > 0 {
-                format!("{}日", app.settings.retention_days)
-            } else {
-                "無期限".to_string()
-            }
-        )),
-        Line::from(format!(
-            "  サーバー側メールの削除: {}",
-            if app.settings.server_delete_days > 0 {
-                format!("{}日経過後", app.settings.server_delete_days)
-            } else {
-                "しない".to_string()
-            }
-        )),
-        Line::from(""),
-        Line::styled("色分けルール", Style::default().add_modifier(Modifier::BOLD)),
-    ];
-    if app.color_rules.is_empty() {
-        lines.push(Line::from("  （なし）"));
-    } else {
-        for rule in &app.color_rules {
-            let color = crate::colors::parse_hex_color(&rule.color).unwrap_or(Color::White);
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("● ", Style::default().fg(color)),
-                Span::raw(&rule.pattern),
-            ]));
-        }
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::styled("アカウント", Style::default().add_modifier(Modifier::BOLD)));
-    if app.accounts.is_empty() {
-        lines.push(Line::from("  （なし）"));
-    } else {
-        for account in &app.accounts {
-            lines.push(Line::from(format!(
-                "  {} — {}@{}:{} ({})",
-                account.name,
-                account.username,
-                account.host,
-                account.port,
-                if account.use_tls { "TLS" } else { "平文" }
-            )));
-        }
-    }
-
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
-    f.render_widget(paragraph, area);
-}
-
 fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = app
         .status
@@ -339,7 +265,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from("d                 削除（ゴミ箱へ）/復元"),
         Line::from("z → 1/3/7         スヌーズ（1日後/3日後/1週間後）"),
         Line::from("S                 全アカウントを今すぐ同期"),
-        Line::from(",                 設定画面の表示切替"),
+        Line::from(",                 設定画面の表示切替（設定はj/kで選んでEnterで変更）"),
         Line::from("q                 終了"),
         Line::from(""),
         Line::from("(何かキーを押すと閉じます)"),
