@@ -11,7 +11,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
     // （global quitの'q'等を誤って飲み込まれないよう、これを最優先で分岐する）。
     if app.search_mode {
         match key.code {
-            KeyCode::Enter => app.run_search()?,
+            KeyCode::Enter => app.confirm_search()?,
             KeyCode::Esc => app.cancel_search(),
             _ => {
                 app.search_input.handle_event(&crossterm::event::Event::Key(key));
@@ -84,6 +84,12 @@ fn handle_messages_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
             app.sync_now();
             return Ok(());
         }
+        // 検索結果を出している間のEscは、検索をやめて元の一覧に戻る。
+        KeyCode::Esc if app.search_results.is_some() => {
+            app.cancel_search();
+            app.load_selected_detail()?;
+            return Ok(());
+        }
         KeyCode::Tab => {
             app.focus = match app.focus {
                 Pane::Sidebar => Pane::List,
@@ -110,7 +116,7 @@ fn handle_messages_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
 }
 
 fn sidebar_len(app: &App) -> usize {
-    FOLDERS.len() + app.labels.len()
+    FOLDERS.len() + app.labels.len() + app.saved_searches.len()
 }
 
 fn sidebar_selection_at(app: &App, index: usize) -> Option<SidebarSelection> {
@@ -137,6 +143,8 @@ fn handle_sidebar_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
             if let Some(selection) = sidebar_selection_at(app, app.sidebar_cursor) {
                 app.select_sidebar(selection)?;
                 app.focus = Pane::List;
+            } else if app.sidebar_cursor >= FOLDERS.len() + app.labels.len() {
+                app.open_saved_search(app.sidebar_cursor - FOLDERS.len() - app.labels.len())?;
             }
         }
         _ => {}
