@@ -15,6 +15,8 @@
     markReadDelay = true,
     onClose = () => {},
     onChanged = () => {},
+    // スレッドの別のメッセージを開く（一覧の選択もそのメッセージに移す）。
+    onOpenMessage = () => {},
   } = $props()
 
   let detail = $state(null)
@@ -326,6 +328,30 @@
       </ul>
     {/if}
 
+    {#if detail.thread.length > 1}
+      <details class="thread" open>
+        <summary>このスレッドのメッセージ（{detail.thread.length}件）</summary>
+        <ol>
+          {#each detail.thread as item (item.id)}
+            <li>
+              <button
+                type="button"
+                class="thread-item"
+                class:current={item.id === detail.id}
+                class:unread={!item.is_read}
+                disabled={item.id === detail.id}
+                onclick={() => onOpenMessage(item.id)}
+              >
+                <span class="thread-from">{item.from_name ?? item.from_addr ?? '(unknown sender)'}</span>
+                <span class="thread-date">{formatDate(item.date_header)}</span>
+                <span class="thread-preview">{item.preview ?? item.subject ?? ''}</span>
+              </button>
+            </li>
+          {/each}
+        </ol>
+      </details>
+    {/if}
+
     <pre class="body">{detail.body ?? '(no body)'}</pre>
   {/if}
 </div>
@@ -475,6 +501,64 @@
   }
   .toolbar-status {
     align-self: center;
+  }
+  .thread {
+    margin: 0.5rem 0 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-subtle);
+    font-size: 12.5px;
+  }
+  .thread summary {
+    padding: 6px 10px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .thread ol {
+    list-style: none;
+    margin: 0;
+    padding: 0 4px 4px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  .thread-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0 12px;
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--text-secondary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .thread-item:hover:not(:disabled) {
+    background: var(--surface-muted);
+  }
+  .thread-item.current {
+    background: var(--accent-soft-bg);
+    cursor: default;
+  }
+  .thread-item.unread .thread-from {
+    font-weight: 700;
+  }
+  .thread-from,
+  .thread-preview {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .thread-date {
+    color: var(--text-faint);
+    font-size: 11px;
+  }
+  .thread-preview {
+    grid-column: 1 / -1;
+    color: var(--text-muted);
+    font-size: 12px;
   }
   .body {
     white-space: pre-wrap;

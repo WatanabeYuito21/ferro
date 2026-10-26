@@ -270,6 +270,23 @@
   （`search_messages`の`utc_offset_seconds`）、CLI/TUIはUTCの0時で区切る（chrono等を
   足さずにローカルのオフセットを得る手段が無いため）。GUIの「詳細」フォーム
   （`AdvancedSearch.svelte`）は書式の文字列を組み立てて検索欄に入れるだけで、検索の経路は同じ。
+- **スレッド表示**（`ferro_core::threads`、v0.0.30）: `messages.thread_id`（0001から列だけあった）に
+  スレッドで共通の値（そのスレッドで最初に受信したメッセージのid）を入れる。sync時
+  （`store_fetched_message`）に`References`→`In-Reply-To`のMessage-IDを根に近い方から探し、
+  同じアカウントの受信済みメッセージが見つかればそのスレッド、無ければ自分のid。件名だけでは
+  まとめない（同じ件名の別件が大量にあるアラートメールを1スレッドにしてしまうため）。返信が
+  元のメールより先に届いた場合は繋ぎ直さない（返信側の`References`を保存していないため）。
+  0010以前の分は`threads::backfill_batch`をGUI起動時の`spawn_thread_backfill`が専用接続で
+  500件ずつ回して埋める（Maildirのヘッダーを読み直す。実データ7.2万件で初回は約11分＝
+  ほぼファイルを初めて読むI/Oの時間。`reindex`の初回投入と同じ遅さ）。
+  `idx_messages_thread_pending`（`thread_id IS NULL`の部分インデックス）は埋め終わると空になるので、
+  以後の起動では残りの確認が一瞬で済む。TUI/CLIは後付けをしない（表示もしないため。
+  新着はどこから同期してもsync時に判定される）。GUIは一覧の各行に件数（`thread_info`。
+  ページ単位で1クエリ）、本文表示に同じスレッドのメッセージ一覧（`list_thread`）を出す。
+  一覧をスレッド単位に畳む表示はしていない（keysetページネーションのまま畳むと、ページを
+  またいだスレッドや、畳んだ行への一括操作・キーボード操作の意味が曖昧になるため）。
+  なお開発者の実データ（主にアラートメール）には返信を含むメールが無く、2件以上の
+  スレッドは0件だった。
 - **.eml書き出し**（`ferro_core::mail::export`、v0.0.26）: Maildirのファイル自体が既に
   RFC 5322の生メールなので、変換はせずバイト列をそのまま書き出す。GUIは本文表示の
   「.emlとして保存…」（`save_message_eml`コマンド＋`tauri-plugin-dialog`の保存ダイアログ）、

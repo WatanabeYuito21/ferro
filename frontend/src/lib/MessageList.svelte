@@ -186,6 +186,9 @@
             <span class="from" title={message.from_addr ?? ''} style={rowColor ? `color: ${rowColor}` : ''}>
               {message.from_name ?? message.from_addr ?? '(unknown sender)'}
             </span>
+            {#if message.thread_size > 1}
+              <span class="thread-count" title="このスレッドのメッセージ数">{message.thread_size}</span>
+            {/if}
             <span class="date">{formatDate(message.date_header)}</span>
           </div>
           <div class="subject" title={message.subject ?? ''} style={rowColor ? `color: ${rowColor}` : ''}>
@@ -289,6 +292,15 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text);
+  }
+  .thread-count {
+    flex: none;
+    padding: 0 6px;
+    border-radius: 8px;
+    background: var(--surface-muted);
+    color: var(--text-muted);
+    font-size: 10.5px;
+    font-weight: 600;
   }
   .date {
     font-size: calc(11px * var(--content-font-scale, 1));

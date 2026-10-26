@@ -155,6 +155,8 @@ struct MessageView {
     attachment_count: i64,
     preview: Option<String>,
     labels: Vec<LabelView>,
+    /// このメッセージが属するスレッドの件数（削除済みを除く。スレッド未判定なら1）。
+    thread_size: i64,
 }
 
 impl From<Message> for MessageView {
@@ -174,30 +176,49 @@ impl From<Message> for MessageView {
             attachment_count: m.attachment_count,
             preview: m.preview,
             // ラベルは一覧側でまとめて取得して詰める(`attach_labels`参照。
-            // メッセージ1件ごとにラベルを引くとN+1になるため)。
+            // メッセージ1件ごとにラベルを引くとN+1になるため)。スレッドの件数も同じ。
             labels: Vec::new(),
+            thread_size: 1,
         }
     }
 }
 
-/// `messages`をまとめて`MessageView`に変換し、ラベルを1回のクエリで詰める
-/// (`db::labels::for_messages`でN+1を避ける)。一覧・検索・ラベル別一覧の
-/// 各コマンドで共通に使う。
+/// `messages`をまとめて`MessageView`に変換し、ラベルとスレッドの件数をそれぞれ
+/// 1回のクエリで詰める(`db::labels::for_messages`/`db::messages::thread_info`で
+/// N+1を避ける)。一覧・検索・ラベル別一覧の各コマンドで共通に使う。
 fn attach_labels(conn: &Connection, messages: Vec<Message>) -> Result<Vec<MessageView>, String> {
     let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
     let mut label_map: HashMap<i64, Vec<Label>> =
         db::labels::for_messages(conn, &ids).map_err(|e| e.to_string())?;
+    let thread_map = db::messages::thread_info(conn, &ids).map_err(|e| e.to_string())?;
 
     Ok(messages
         .into_iter()
         .map(|m| {
             let labels = label_map.remove(&m.id).unwrap_or_default();
+            let thread_size = thread_map.get(&m.id).map_or(1, |&(_, size)| size);
             let mut view = MessageView::from(m);
             view.labels = labels.into_iter().map(LabelView::from).collect();
+            view.thread_size = thread_size;
             view
         })
         .collect())
 }
+
+/// 本文表示の「このスレッドのメッセージ」欄の1行。
+#[derive(Serialize)]
+struct ThreadItemView {
+    id: i64,
+    subject: Option<String>,
+    from_name: Option<String>,
+    from_addr: Option<String>,
+    date_header: i64,
+    is_read: bool,
+    preview: Option<String>,
+}
+
+/// 本文表示で一度に出すスレッドのメッセージ数の上限。
+const THREAD_DISPLAY_LIMIT: u32 = 200;
 
 /// Sync進捗（"30/1000"のような表示用）。1バッチ完了するごとに発火する。
 /// 検索インデックス再構築の進捗（`reindex::ReindexProgress`）。開始直後と、
@@ -265,6 +286,8 @@ struct MessageDetailView {
     labels: Vec<LabelView>,
     body: Option<String>,
     attachments: Vec<AttachmentView>,
+    /// 同じスレッドのメッセージ（自分を含み古い順）。スレッドが自分だけなら空。
+    thread: Vec<ThreadItemView>,
     /// 「.emlとして保存」の保存ダイアログで既定にするファイル名。
     eml_filename: String,
 }
@@ -288,6 +311,22 @@ fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<Message
     let (message, raw) = load_message_and_raw(&conn, message_id)?;
     let labels = db::labels::for_message(&conn, message_id).map_err(|e| e.to_string())?;
     let eml_filename = export::suggested_eml_filename(message.subject.as_deref(), message.id);
+    let thread = match db::messages::thread_info(&conn, &[message_id]).map_err(|e| e.to_string())?.get(&message_id) {
+        Some(&(thread_id, size)) if size > 1 => db::messages::list_thread(&conn, thread_id, THREAD_DISPLAY_LIMIT)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|m| ThreadItemView {
+                id: m.id,
+                subject: m.subject,
+                from_name: m.from_name,
+                from_addr: m.from_addr,
+                date_header: m.date_header,
+                is_read: m.is_read,
+                preview: m.preview,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     Ok(MessageDetailView {
         id: message.id,
@@ -306,6 +345,7 @@ fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<Message
             .map(AttachmentView::from)
             .collect(),
         eml_filename,
+        thread,
     })
 }
 
@@ -1140,6 +1180,40 @@ fn spawn_initial_search_catchup(app_handle: AppHandle) {
     });
 }
 
+/// スレッド表示（`ferro_core::threads`）を入れる前に受信していたメッセージの
+/// スレッドを、起動後にバックグラウンドで少しずつ埋める。新しく受信したメッセージは
+/// sync時に判定済みなので、埋め終われば以後は起動直後に「残り無し」を確かめるだけ
+/// （`idx_messages_thread_pending`が空になるので全件は舐めない）。
+///
+/// `reindex_all`と同じ理由で`write_conn`は借りず専用の接続で動かす（Maildirを読み直す
+/// ため1バッチ数秒かかりうるので、その間同期や既読化を待たせない）。
+fn spawn_thread_backfill() {
+    std::thread::spawn(|| {
+        let Ok(conn) = db::open(&paths::db_path()) else {
+            return;
+        };
+        let mut after_id = 0i64;
+        let mut total = 0usize;
+        loop {
+            match ferro_core::threads::backfill_batch(&conn, &paths::maildir_dir(), after_id, 500) {
+                Ok((count, Some(next))) => {
+                    total += count;
+                    after_id = next;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Ok((_, None)) => break,
+                Err(e) => {
+                    logging::log_line(&format!("threads: backfill failed after id={after_id}: {e}"));
+                    return;
+                }
+            }
+        }
+        if total > 0 {
+            logging::log_line(&format!("threads: backfilled {total} message(s)"));
+        }
+    });
+}
+
 /// メール保持期間（`settings::Settings::retention_days`）のバックグラウンド
 /// 掃除スレッド。起動直後に一度、以後は`RETENTION_CHECK_INTERVAL`ごとに実行する
 /// （保持日数は同期間隔ほど頻繁に変える設定ではないと想定されるため、短い間隔は
@@ -1350,6 +1424,7 @@ pub fn run() {
             spawn_background_sync(app.handle().clone());
             spawn_initial_search_catchup(app.handle().clone());
             spawn_retention_cleanup(app.handle().clone());
+            spawn_thread_backfill();
 
             let messages_item = MenuItemBuilder::with_id(NAV_MESSAGES_ID, "Messages").build(app)?;
             let settings_item = MenuItemBuilder::with_id(NAV_SETTINGS_ID, "Settings…").build(app)?;

@@ -548,6 +548,7 @@ fn store_fetched_message(
     let Some(id) = new_id else {
         return Ok(None);
     };
+    crate::threads::assign(conn, account_id, id, &parsed.headers.references)?;
 
     let from = format!(
         "{} {}",
