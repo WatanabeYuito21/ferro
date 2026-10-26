@@ -95,7 +95,13 @@ jobs:
       - name: Build CLI/TUI binaries
         run: cargo build --release -p ferro-cli -p ferro-tui
 
+      # 自動アップデート用の署名。秘密鍵はGitHub SecretsのTAURI_SIGNING_PRIVATE_KEY
+      # (パスワード付きならTAURI_SIGNING_PRIVATE_KEY_PASSWORDも)。
+      # createUpdaterArtifacts=trueのため、未設定だとビルドが失敗する。
       - name: Build GUI installer bundles
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build
 
       - name: Package CLI/TUI binaries (Windows)
@@ -119,7 +125,7 @@ jobs:
         run: |
           mkdir -p release-assets
           find target/release/bundle -type f \
-            \( -name '*.msi' -o -name '*setup.exe' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' \) \
+            \( -name '*.msi' -o -name '*setup.exe' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' -o -name '*.sig' \) \
             -exec cp {} release-assets/ \;
 
       - uses: actions/upload-artifact@v4
@@ -136,6 +142,23 @@ jobs:
           pattern: release-assets-*
           merge-multiple: true
           path: release-assets
+
+      # Tauri updaterが読む latest.json を、各プラットフォームの.sigから組み立てる。
+      # NSIS(setup.exe)とAppImageを更新対象にする(MSI/debは自動更新に使わない)。
+      - name: Generate latest.json
+        shell: bash
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          cd release-assets
+          WIN_EXE=$(ls *setup.exe | head -n1)
+          LINUX_APP=$(ls *.AppImage | head -n1)
+          BASE="https://github.com/$REPO/releases/download/v$VERSION"
+          jq -n             --arg version "$VERSION"             --arg pub "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             --arg winsig "$(cat "$WIN_EXE.sig")"             --arg winurl "$BASE/$WIN_EXE"             --arg linsig "$(cat "$LINUX_APP.sig")"             --arg linurl "$BASE/$LINUX_APP"             '{version:$version, pub_date:$pub, platforms:{
+               "windows-x86_64":{signature:$winsig,url:$winurl},
+               "linux-x86_64":{signature:$linsig,url:$linurl}}}' > latest.json
+          cat latest.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

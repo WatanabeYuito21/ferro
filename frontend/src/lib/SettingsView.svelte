@@ -4,6 +4,8 @@
   // 設計のため対象が無い）「送信の取り消し」（送信機能自体が無い）は実装しない。
   import { invoke } from '@tauri-apps/api/core'
   import { openPath } from '@tauri-apps/plugin-opener'
+  import { check } from '@tauri-apps/plugin-updater'
+  import { relaunch } from '@tauri-apps/plugin-process'
   import AccountsView from './AccountsView.svelte'
   import ColorRulesView from './ColorRulesView.svelte'
   import LabelRulesView from './LabelRulesView.svelte'
@@ -40,6 +42,34 @@
   let error = $state('')
   let saving = $state(false)
   let openLogError = $state('')
+
+  // 自動アップデート（GitHub Releasesの`latest.json`を見て、署名検証つきで更新する）。
+  // 確認・適用とも利用者が押したときだけ動く（起動時に勝手には確認しない）。
+  let updateStatus = $state('')
+  let updateError = $state('')
+  let updateBusy = $state(false)
+
+  async function checkForUpdate() {
+    updateError = ''
+    updateStatus = '確認中…'
+    updateBusy = true
+    try {
+      const update = await check()
+      if (!update) {
+        updateStatus = '最新バージョンです。'
+        return
+      }
+      updateStatus = `v${update.version} をダウンロード中…`
+      await update.downloadAndInstall()
+      updateStatus = `v${update.version} をインストールしました。再起動します…`
+      await relaunch()
+    } catch (e) {
+      updateStatus = ''
+      updateError = String(e)
+    } finally {
+      updateBusy = false
+    }
+  }
 
   async function openLogFile() {
     openLogError = ''
@@ -422,6 +452,28 @@
       </div>
       {#if purgeStatus}
         <p class="reindex-status">{purgeStatus}</p>
+      {/if}
+    </div>
+
+    <h2 class="section-title">アップデート</h2>
+    <div class="rows">
+      <div class="row">
+        <div class="text">
+          <div class="title">更新を確認</div>
+          <div class="desc">
+            GitHub Releasesに新しいバージョンがあれば、ダウンロードしてインストールし、Ferroを再起動します。
+            （GUI版のみ。CLI/TUIは手動で入れ替えてください）
+          </div>
+        </div>
+        <button type="button" class="action-button" onclick={checkForUpdate} disabled={updateBusy}>
+          {updateBusy ? '処理中…' : '更新を確認'}
+        </button>
+      </div>
+      {#if updateStatus}
+        <p class="reindex-status">{updateStatus}</p>
+      {/if}
+      {#if updateError}
+        <p class="reindex-status"><span class="error">{updateError}</span></p>
       {/if}
     </div>
 
