@@ -91,6 +91,8 @@ pub struct App {
     /// 本文を表示してから`mark_read_delay`秒後に既読化するためのタイマー。
     pub read_delay_deadline: Option<Instant>,
 
+    /// 検索欄に入力中か（入力中はキーを全て検索欄へ渡す）。`Enter`で確定すると抜け、
+    /// 結果（`search_results`）は残ったまま一覧と同じキーで動ける。
     pub search_mode: bool,
     pub search_input: Input,
     pub search_results: Option<Vec<Message>>,
@@ -98,6 +100,8 @@ pub struct App {
     pub color_rules: Vec<ColorRule>,
     pub settings: Settings,
     pub accounts: Vec<Account>,
+    /// 保存した検索と、それぞれの未読数（サイドバーのラベルの下に出す）。
+    pub saved_searches: Vec<(ferro_core::saved_searches::SavedSearch, usize)>,
     /// アカウントごとの直近の同期結果（設定画面のアカウント一覧に出す）。
     pub sync_statuses: std::collections::HashMap<i64, ferro_core::db::sync_status::SyncStatus>,
 
@@ -147,6 +151,7 @@ impl App {
             color_rules: Vec::new(),
             settings: Settings::default(),
             accounts: Vec::new(),
+            saved_searches: Vec::new(),
             sync_statuses: std::collections::HashMap::new(),
             awaiting_snooze_choice: false,
             settings_cursor: 0,
@@ -174,6 +179,17 @@ impl App {
         self.labels = ferro_core::db::labels::list_with_counts(&conn)?;
         self.accounts = ferro_core::db::accounts::list(&conn)?;
         self.sync_statuses = ferro_core::db::sync_status::list(&conn)?;
+        // 壊れたファイルでTUIごと起動できなくならないよう、読めなければ出さないだけにする。
+        let saved = ferro_core::saved_searches::load(&paths::saved_searches_config_path()).unwrap_or_default();
+        self.saved_searches = saved
+            .searches
+            .into_iter()
+            .map(|search| {
+                let unread =
+                    ferro_core::saved_searches::unread_count(&conn, &self.search_index, &search.query, 0).unwrap_or(0);
+                (search, unread)
+            })
+            .collect();
         drop(conn);
         self.settings = settings::load(&paths::settings_config_path())?;
         self.color_rules = color_rules::load(&paths::color_rules_config_path())?.rules;
@@ -460,6 +476,26 @@ impl App {
         self.search_mode = false;
         self.search_results = None;
         self.list_cursor = 0;
+    }
+
+    /// 検索の入力を確定する（結果を残したまま入力欄から抜け、先頭の結果を開く）。
+    pub fn confirm_search(&mut self) -> anyhow::Result<()> {
+        self.run_search()?;
+        self.search_mode = false;
+        if self.search_results.is_none() {
+            return Ok(());
+        }
+        self.load_selected_detail()
+    }
+
+    /// 保存した検索（`saved_searches`の`index`番目）を開く。
+    pub fn open_saved_search(&mut self, index: usize) -> anyhow::Result<()> {
+        let Some((search, _)) = self.saved_searches.get(index) else {
+            return Ok(());
+        };
+        self.search_input = Input::new(search.query.clone());
+        self.focus = Pane::List;
+        self.confirm_search()
     }
 
     pub fn run_search(&mut self) -> anyhow::Result<()> {

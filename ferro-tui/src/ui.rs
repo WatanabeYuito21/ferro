@@ -35,7 +35,7 @@ pub fn render(f: &mut Frame, app: &App) {
 }
 
 fn render_messages_screen(f: &mut Frame, app: &App, area: Rect) {
-    let (search_area, body_area) = if app.search_mode {
+    let (search_area, body_area) = if app.search_mode || app.search_results.is_some() {
         let split = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(1)])
@@ -60,7 +60,8 @@ fn render_messages_screen(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_search_bar(f: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("検索 (Enter:確定 Esc:キャンセル)");
+    let title = if app.search_mode { "検索 (Enter:確定 Esc:キャンセル)" } else { "検索 (/:検索し直す Esc:一覧に戻る)" };
+    let block = Block::default().borders(Borders::ALL).title(title);
     let text = app.search_input.value();
     let paragraph = Paragraph::new(text).block(block);
     f.render_widget(paragraph, area);
@@ -73,6 +74,8 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
         .border_style(pane_border_style(active))
         .title("フォルダ");
 
+    // 検索結果を出している間は、通常のフォルダ/ラベルではなく保存した検索の方を選択中として出す。
+    let searching = app.search_results.is_some();
     let mut items: Vec<ListItem> = FOLDERS
         .iter()
         .map(|(folder, label)| {
@@ -83,7 +86,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 ferro_core::db::messages::Folder::Archive => app.folder_counts.archive,
                 ferro_core::db::messages::Folder::Trash => app.folder_counts.trash,
             };
-            let selected = app.selection == crate::app::SidebarSelection::Folder(*folder);
+            let selected = !searching && app.selection == crate::app::SidebarSelection::Folder(*folder);
             let marker = if selected { "▶ " } else { "  " };
             ListItem::new(Line::from(format!("{marker}{label} ({count})")))
         })
@@ -92,7 +95,7 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     if !app.labels.is_empty() {
         items.push(ListItem::new(Line::from("―― ラベル ――")));
         for label_with_count in &app.labels {
-            let selected = app.selection == crate::app::SidebarSelection::Label(label_with_count.label.id);
+            let selected = !searching && app.selection == crate::app::SidebarSelection::Label(label_with_count.label.id);
             let marker = if selected { "▶ " } else { "  " };
             let dot_color = crate::colors::parse_hex_color(&label_with_count.label.color).unwrap_or(Color::White);
             items.push(ListItem::new(Line::from(vec![
@@ -100,6 +103,20 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled("● ", Style::default().fg(dot_color)),
                 Span::raw(format!("{} ({})", label_with_count.label.name, label_with_count.count)),
             ])));
+        }
+    }
+
+    if !app.saved_searches.is_empty() {
+        items.push(ListItem::new(Line::from("―― 保存した検索 ――")));
+        for (search, unread) in &app.saved_searches {
+            let selected = searching && app.search_input.value().trim() == search.query;
+            let marker = if selected { "▶ " } else { "  " };
+            let count = match *unread {
+                0 => String::new(),
+                n if n >= ferro_core::saved_searches::UNREAD_COUNT_CAP => " (999+)".to_string(),
+                n => format!(" ({n})"),
+            };
+            items.push(ListItem::new(Line::from(format!("{marker}⌕ {}{count}", search.name))));
         }
     }
 
@@ -114,18 +131,21 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-/// サイドバーの表示行番号（ラベル区切り行がある分だけラベルのインデックスとずれる）。
+/// サイドバーの表示行番号（「ラベル」「保存した検索」の区切り行がある分だけずれる）。
 fn cursor_row_for_sidebar(app: &App) -> usize {
-    if app.sidebar_cursor < FOLDERS.len() {
-        app.sidebar_cursor
+    let cursor = app.sidebar_cursor;
+    if cursor < FOLDERS.len() {
+        cursor
+    } else if cursor < FOLDERS.len() + app.labels.len() {
+        cursor + 1
     } else {
-        FOLDERS.len() + 1 + (app.sidebar_cursor - FOLDERS.len())
+        cursor + usize::from(!app.labels.is_empty()) + 1
     }
 }
 
 fn render_list(f: &mut Frame, app: &App, area: Rect) {
     let active = matches!(app.focus, Pane::List) && app.screen == Screen::Messages;
-    let title = if app.search_mode { "検索結果" } else { "メッセージ一覧" };
+    let title = if app.search_results.is_some() { "検索結果" } else { "メッセージ一覧" };
     let block = Block::default().borders(Borders::ALL).border_style(pane_border_style(active)).title(title);
 
     let list_items = app.current_list();
@@ -264,7 +284,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from("Tab / Shift+Tab   ペイン切替（フォルダ|一覧|本文）"),
         Line::from("↑/k, ↓/j          カーソル移動"),
         Line::from("Enter             フォルダ/ラベルを選択"),
-        Line::from("/                 検索（Enterで確定、Escでキャンセル）"),
+        Line::from("/                 検索（Enterで確定して結果を移動、Escで一覧に戻る）"),
         Line::from("r                 既読/未読切替"),
         Line::from("s                 スター切替"),
         Line::from("a                 アーカイブ切替"),

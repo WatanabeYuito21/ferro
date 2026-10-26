@@ -54,3 +54,8 @@ pub fn settings_config_path() -> PathBuf {
 pub fn label_rules_config_path() -> PathBuf {
     app_data_dir().join("label_rules.toml")
 }
+
+/// 保存した検索（`saved_searches::load`/`save`参照）。これも正の情報源で、DBテーブルは無い。
+pub fn saved_searches_config_path() -> PathBuf {
+    app_data_dir().join("saved_searches.toml")
+}
