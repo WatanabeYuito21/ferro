@@ -312,6 +312,12 @@
   CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
   （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
   別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
+- **検索語のハイライト**（`ferro_core::search::highlight`、v0.0.37）: 強調する語は
+  `query::parse`の全文検索の語のうち否定でないもの（`terms`。GUIは`highlight_terms`コマンド）。
+  一致の規則は検索と同じく大文字小文字を無視した部分一致で、同じ位置からなら長い語を優先
+  （Rustの`ranges`＝TUI、JSの`frontend/src/lib/highlight.js`＝GUI。変えるときは両方を揃える）。
+  検索そのものはバイグラムのフレーズ一致なので、記号の扱い等で「検索には当たったが強調されない」
+  ことはありうる（強調は表示の補助なので許容）。GUIは本文の最初の一致へ`scrollIntoView`する。
 - **保存した検索**（`ferro_core::saved_searches`、v0.0.36）: 検索欄の文字列に名前を付けて
   `saved_searches.toml`に保存する（`color_rules.toml`と同じくファイルが正の情報源。同じ名前で
   追加すると条件を置き換える）。結果は保存せず、開くたびに普通の検索として実行する。
