@@ -6,6 +6,7 @@
 //! （スキーマが変わって既存インデックスと不一致になった場合は削除して作り直す）。
 
 use std::fs;
+use std::ops::Bound;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
@@ -13,7 +14,7 @@ use std::time::Duration;
 
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
-use tantivy::query::{AllQuery, BooleanQuery, Occur, PhrasePrefixQuery, Query};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, PhrasePrefixQuery, Query, RangeQuery};
 use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, STORED, Schema, TextFieldIndexing, TextOptions, Value,
 };
@@ -21,7 +22,9 @@ use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, TextAnalyzer};
 use tantivy::{Index, IndexReader, IndexWriter, Order, ReloadPolicy, Term, doc};
 
 mod cjk_tokenizer;
+pub mod query;
 use cjk_tokenizer::CjkBigramTokenizer;
+use query::{TextField, TextTerm};
 
 /// このトークナイザ名でスキーマとインデックスの両方に登録する
 /// （`build_word_query`もクエリ文字列を索引投入時と同じトークナイザで分割するため、
@@ -445,32 +448,73 @@ impl SearchIndex {
     /// 「検索精度が低い」対策）、1単語に対する件名/差出人/本文はOR（いずれかの
     /// フィールドで一致すればよい）で結合する。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<i64>> {
+        let terms: Vec<TextTerm> = query
+            .split_whitespace()
+            .map(|word| TextTerm { field: TextField::Any, text: word.to_string(), negated: false })
+            .collect();
+        self.search_terms(&terms, None, None, limit)
+    }
+
+    /// 詳細検索（`query::parse`の結果）用。語ごとに指定のフィールド（`Any`なら
+    /// 件名/差出人/本文のどれか）で探し、語の間はAND、`negated`の語は含まないもの。
+    /// `after`/`before`（Unix秒）で受信日時も絞り込む（`date_header`のFASTフィールドに
+    /// 対する範囲クエリ。DB側で絞り込むと、日付の古い一致が全文検索の上位N件から
+    /// 漏れてしまうため）。否定の語と日付しか無い場合は全文書が対象。
+    /// 並び順は`search`と同じく受信日時の新しい順。
+    pub fn search_terms(
+        &self,
+        terms: &[TextTerm],
+        after: Option<i64>,
+        before: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<i64>> {
         let searcher = self.reader.searcher();
 
-        let mut word_queries: Vec<Box<dyn Query>> = Vec::new();
-        for word in query.split_whitespace() {
-            let field_queries: Vec<(Occur, Box<dyn Query>)> = [self.fields.subject, self.fields.from, self.fields.body]
-                .into_iter()
-                .filter_map(|field| self.build_word_query(field, word))
+        let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+        for term in terms {
+            let fields: &[Field] = match term.field {
+                TextField::Any => &[self.fields.subject, self.fields.from, self.fields.body],
+                TextField::From => &[self.fields.from],
+                TextField::Subject => &[self.fields.subject],
+                TextField::Body => &[self.fields.body],
+            };
+            let field_queries: Vec<(Occur, Box<dyn Query>)> = fields
+                .iter()
+                .filter_map(|&field| self.build_word_query(field, &term.text))
                 .map(|q| (Occur::Should, q))
                 .collect();
-            if !field_queries.is_empty() {
-                word_queries.push(Box::new(BooleanQuery::new(field_queries)));
+            if field_queries.is_empty() {
+                // トークンにならない語（記号だけ等）。肯定の語なら何にも一致しない。
+                if term.negated {
+                    continue;
+                }
+                return Ok(Vec::new());
             }
+            let occur = if term.negated { Occur::MustNot } else { Occur::Must };
+            clauses.push((occur, Box::new(BooleanQuery::new(field_queries))));
         }
-        if word_queries.is_empty() {
-            return Ok(Vec::new());
+        if after.is_some() || before.is_some() {
+            let bound = |at: Option<i64>, make: fn(Term) -> Bound<Term>| {
+                at.map_or(Bound::Unbounded, |at| {
+                    make(Term::from_field_u64(self.fields.date_header, at.max(0) as u64))
+                })
+            };
+            clauses.push((
+                Occur::Must,
+                Box::new(RangeQuery::new(bound(after, Bound::Included), bound(before, Bound::Excluded))),
+            ));
         }
-        let combined: Box<dyn Query> = if word_queries.len() == 1 {
-            word_queries.into_iter().next().expect("checked len == 1 above")
-        } else {
-            Box::new(BooleanQuery::new(
-                word_queries.into_iter().map(|q| (Occur::Must, q)).collect(),
-            ))
-        };
+        if !clauses.iter().any(|(occur, _)| *occur == Occur::Must) {
+            if clauses.is_empty() {
+                return Ok(Vec::new());
+            }
+            // 否定の語だけでは何も選ばれないので、全文書を起点にする。
+            clauses.push((Occur::Must, Box::new(AllQuery)));
+        }
+        let combined = BooleanQuery::new(clauses);
 
         let top_docs = searcher.search(
-            combined.as_ref(),
+            &combined,
             &TopDocs::with_limit(limit).order_by_u64_field(DATE_HEADER_FIELD_NAME, Order::Desc),
         )?;
 

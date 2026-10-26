@@ -48,7 +48,8 @@ enum Command {
         #[arg(long)]
         before: Option<i64>,
     },
-    /// 全文検索インデックスを検索する
+    /// 全文検索インデックスを検索する（`from:`/`subject:`/`has:attachment`/`is:unread`/
+    /// `label:`/`in:`/`after:YYYY-MM-DD`/`before:`等の詳細検索の書式も使える）
     Search {
         query: String,
         #[arg(long, default_value_t = 20)]
@@ -388,7 +389,8 @@ fn run_search_command(
     query: &str,
     limit: usize,
 ) -> anyhow::Result<()> {
-    for id in search_index.search(query, limit)? {
+    // `after:`/`before:`の日付はUTCの0時で区切る（CLIは利用者のタイムゾーンを知らない）。
+    for id in ferro_core::message_search::search_query(conn, search_index, query, 0, limit)? {
         let Some(message) = messages::get(conn, id)? else {
             continue;
         };

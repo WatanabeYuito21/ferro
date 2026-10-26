@@ -8,6 +8,7 @@
   import SettingsView from './lib/SettingsView.svelte'
   import KeyboardHelp from './lib/KeyboardHelp.svelte'
   import BulkActionBar from './lib/BulkActionBar.svelte'
+  import AdvancedSearch from './lib/AdvancedSearch.svelte'
   import { applyPatch, neighborId, clickSelection, toggleChecked } from './lib/messageView.js'
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
@@ -63,6 +64,7 @@
   // 入力のたびに検索を投げるため、後から入力した検索より前の検索の応答が
   // 遅れて返ってきて上書きしてしまう競合を避ける（最新のリクエストIDだけ反映する）。
   let searchRequestId = 0
+  let showAdvancedSearch = false
 
   let selectedMessageId = null
 
@@ -652,7 +654,12 @@
     const requestId = ++searchRequestId
     clearChecked()
     try {
-      const results = await invoke('search_messages', { query, limit: 50 })
+      const results = await invoke('search_messages', {
+        query,
+        limit: 50,
+        // `after:`/`before:`の日付を利用者のタイムゾーンの0時で区切るため。
+        utcOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+      })
       if (requestId !== searchRequestId) return // より新しい検索が既に走っている
       searchResults = results
       searchError = ''
@@ -663,6 +670,16 @@
     } finally {
       if (requestId === searchRequestId) searching = false
     }
+  }
+
+  // 詳細検索フォームから。組み立てた書式を検索欄に入れて、そのまま検索する
+  // （検索欄で書式を直して検索し直せるように）。
+  function runAdvancedSearch(query) {
+    searchQuery = query
+    showAdvancedSearch = false
+    clearTimeout(searchDebounceTimer)
+    searching = true
+    runSearch(query)
   }
 
   function clearSearch() {
@@ -757,7 +774,7 @@
         <section class="messages-view">
             <div class="search-bar">
               <input
-                placeholder="件名/差出人/本文を検索…（/ で移動）"
+                placeholder="件名/差出人/本文を検索…（from: has:attachment などの書式も可。/ で移動）"
                 bind:this={searchInput}
                 bind:value={searchQuery}
                 on:input={onSearchInput}
@@ -770,6 +787,13 @@
               {/if}
               <button
                 type="button"
+                class:active={showAdvancedSearch}
+                on:click={() => (showAdvancedSearch = !showAdvancedSearch)}
+              >
+                詳細
+              </button>
+              <button
+                type="button"
                 class="shortcut-hint"
                 title="キーボードショートカット"
                 on:click={() => (showKeyboardHelp = true)}
@@ -777,6 +801,13 @@
                 ?
               </button>
             </div>
+            {#if showAdvancedSearch}
+              <AdvancedSearch
+                {labels}
+                onSearch={runAdvancedSearch}
+                onClose={() => (showAdvancedSearch = false)}
+              />
+            {/if}
             {#if searchError}
               <p class="error">{searchError}</p>
             {/if}
@@ -1020,6 +1051,10 @@
   }
   .search-bar button:hover {
     background: var(--surface-muted);
+  }
+  .search-bar button.active {
+    border-color: var(--accent);
+    color: var(--accent-hover);
   }
   .search-results {
     list-style: none;
