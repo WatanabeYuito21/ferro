@@ -7,12 +7,13 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use tantivy::collector::TopDocs;
 use tantivy::directory::MmapDirectory;
-use tantivy::query::{BooleanQuery, Occur, PhrasePrefixQuery, Query};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, PhrasePrefixQuery, Query};
 use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, STORED, Schema, TextFieldIndexing, TextOptions, Value,
 };
@@ -41,6 +42,9 @@ pub enum SearchError {
     LockPoisoned,
     #[error("search index writer is unavailable (a previous recovery attempt failed)")]
     WriterUnavailable,
+    /// `begin_rebuild`済み（`reindex_all`の実行中）にもう1本始めようとした。
+    #[error("検索インデックスの再構築は既に実行中です")]
+    RebuildInProgress,
     /// `open_or_create`が`IndexWriter`を取得できなかった場合。生のTantivyエラー
     /// （"Could not acquire lock..."）だけだと、原因が「別のFerroプロセス
     /// （CLI/TUI/GUI。全て同じ検索インデックスディレクトリを共有する設計。
@@ -156,11 +160,25 @@ pub struct IndexableMessage<'a> {
 pub struct SearchIndex {
     index: Index,
     reader: IndexReader,
-    // Some(_)が通常状態。recover_writer中、古いwriterをdropして新しいwriterを
-    // 作り直す間だけ一時的にNoneになりうる（tantivyは1つのDirectoryにつき
-    // IndexWriterを同時に1つしか持てないため、drop前に新しいものは作れない）。
+    // Some(_)が通常状態。recover_writerで古いwriterをdropしてから新しいwriterを
+    // 作り直すまでの間と、作り直し自体が失敗した場合にNoneになる（tantivyは
+    // 1つのDirectoryにつきIndexWriterを同時に1つしか持てないため、drop前に
+    // 新しいものは作れない）。Noneのままでも、次に`writer_slot`経由で
+    // 書き込もうとした時点で作り直しを再試行する。
     writer: Mutex<Option<IndexWriter>>,
     fields: Fields,
+    /// `reindex_all`による全件再構築の実行中か（`begin_rebuild`参照）。
+    rebuilding: AtomicBool,
+}
+
+/// `SearchIndex::begin_rebuild`が返すガード。dropで再構築中フラグを下ろす
+/// （エラー・panicで抜けた場合も含む）。
+pub struct RebuildGuard<'a>(&'a AtomicBool);
+
+impl Drop for RebuildGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl SearchIndex {
@@ -233,7 +251,51 @@ impl SearchIndex {
             reader,
             writer: Mutex::new(Some(writer)),
             fields,
+            rebuilding: AtomicBool::new(false),
         })
+    }
+
+    /// 全件再構築の開始を宣言する。既に実行中なら`RebuildInProgress`。
+    ///
+    /// 再構築中は`catch_up_unindexed`（未投入分の拾い直し）が何もしなくなる。
+    /// 両者は同じメッセージを同じwriterへ並行して投入することになり、無駄なうえ、
+    /// 実際にGUIで「起動時の拾い直しスレッド」と「再構築」が同時に走った状態で
+    /// 再構築が0件のまま進まなくなった（writerの作り直しに失敗した後、どちらの
+    /// スレッドもリトライの待機を延々と繰り返していた）。再構築はidの昇順に
+    /// 末尾まで舐めるので、その間の拾い直しは不要。
+    pub fn begin_rebuild(&self) -> Result<RebuildGuard<'_>> {
+        if self.rebuilding.swap(true, Ordering::SeqCst) {
+            return Err(SearchError::RebuildInProgress);
+        }
+        Ok(RebuildGuard(&self.rebuilding))
+    }
+
+    pub fn is_rebuilding(&self) -> bool {
+        self.rebuilding.load(Ordering::SeqCst)
+    }
+
+    /// writerのスロットをロックして返す。スロットが空（以前の`recover_writer`が
+    /// 新しいwriterの作成に失敗した）なら、ここで作り直しを再試行する。
+    ///
+    /// 以前は作り直しに一度失敗するとスロットが空のまま固定され、以後の
+    /// `index_message`は全て`WriterUnavailable`で即失敗し、しかも作り直しは
+    /// `commit`失敗時にしか試みない（`index_message`で失敗するとcommitまで
+    /// 到達しない）ため、プロセスを再起動するまで二度と索引投入できなかった。
+    fn writer_slot(&self) -> Result<MutexGuard<'_, Option<IndexWriter>>> {
+        let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+        if slot.is_none() {
+            match self.index.writer_with_num_threads(1, 50_000_000) {
+                Ok(writer) => {
+                    crate::logging::log_line("search: recreated index writer");
+                    *slot = Some(writer);
+                }
+                Err(e) => {
+                    crate::logging::log_line(&format!("search: failed to recreate index writer: {e}"));
+                    return Err(e.into());
+                }
+            }
+        }
+        Ok(slot)
     }
 
     /// `commit`が失敗した後の復旧用。Windows実機で断続的に観測される、
@@ -253,15 +315,24 @@ impl SearchIndex {
         let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
         *slot = None; // 古いwriterをここでdropし、ロックファイルを解放する
         // `from_index`と同じ理由でシングルスレッドに固定する。
-        *slot = Some(self.index.writer_with_num_threads(1, 50_000_000)?);
-        Ok(())
+        match self.index.writer_with_num_threads(1, 50_000_000) {
+            Ok(writer) => {
+                *slot = Some(writer);
+                Ok(())
+            }
+            Err(e) => {
+                // スロットは空のまま残す。次の`writer_slot`呼び出しで再試行される。
+                crate::logging::log_line(&format!("search: failed to recreate index writer: {e}"));
+                Err(e.into())
+            }
+        }
     }
 
     /// メッセージを索引化する。既に同じidの文書があれば置き換える
     /// （tantivyには更新という概念がないため削除してから追加する）。
     /// 呼び出し側でバッチ単位に`commit`をまとめること。
     pub fn index_message(&self, message: &IndexableMessage) -> Result<()> {
-        let slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+        let slot = self.writer_slot()?;
         let writer = slot.as_ref().ok_or(SearchError::WriterUnavailable)?;
         writer.delete_term(Term::from_field_u64(self.fields.id, message.id as u64));
         writer.add_document(doc!(
@@ -277,7 +348,7 @@ impl SearchIndex {
     /// メッセージを索引から取り除く（削除時用。再追加はしない）。
     /// `index_message`同様、呼び出し側で`commit`すること。
     pub fn delete_message(&self, id: i64) -> Result<()> {
-        let slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+        let slot = self.writer_slot()?;
         let writer = slot.as_ref().ok_or(SearchError::WriterUnavailable)?;
         writer.delete_term(Term::from_field_u64(self.fields.id, id as u64));
         Ok(())
@@ -289,7 +360,7 @@ impl SearchIndex {
     /// 同じ`index_message`群を再実行してから`commit`をやり直すこと。
     pub fn commit(&self) -> Result<()> {
         let result = (|| -> Result<()> {
-            let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let mut slot = self.writer_slot()?;
             let writer = slot.as_mut().ok_or(SearchError::WriterUnavailable)?;
             writer.commit()?;
             Ok(())
@@ -300,6 +371,7 @@ impl SearchIndex {
                 Ok(())
             }
             Err(e) => {
+                crate::logging::log_line(&format!("search: commit failed, recreating index writer: {e}"));
                 let _ = self.recover_writer();
                 Err(e)
             }
@@ -307,11 +379,18 @@ impl SearchIndex {
     }
 
     /// 全メッセージの索引を消す（`reindex_all`が最初に呼ぶ）。
+    ///
+    /// tantivyの`delete_all_documents`は使わない。あれはコミット済みセグメントを
+    /// 捨てたうえでopstampのカウンタを巻き戻すが、別スレッド（syncの新着投入等）が
+    /// 同じwriterへ投入中でまだcommitしていない文書には手を付けないため、並行して
+    /// 使うとopstampの整合が崩れうる。`AllQuery`による削除は通常の削除操作として
+    /// opstamp順に並ぶので、「この時点までに追加された文書」だけが消え、
+    /// 後から追加された文書は正しく残る。削除済み文書の領域は以後のマージで回収される。
     pub fn clear(&self) -> Result<()> {
         let result = (|| -> Result<()> {
-            let mut slot = self.writer.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let mut slot = self.writer_slot()?;
             let writer = slot.as_mut().ok_or(SearchError::WriterUnavailable)?;
-            writer.delete_all_documents()?;
+            writer.delete_query(Box::new(AllQuery))?;
             writer.commit()?;
             Ok(())
         })();
@@ -321,6 +400,7 @@ impl SearchIndex {
                 Ok(())
             }
             Err(e) => {
+                crate::logging::log_line(&format!("search: clear failed, recreating index writer: {e}"));
                 let _ = self.recover_writer();
                 Err(e)
             }

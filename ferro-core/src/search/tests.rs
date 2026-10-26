@@ -289,6 +289,51 @@ fn clear_removes_all_documents() {
 
     index.clear().unwrap();
     assert!(index.search("subject", 10).unwrap().is_empty());
+    assert_eq!(index.num_docs(), 0);
+}
+
+/// `clear`は「その時点までに追加された文書」だけを消し、後から追加された文書は
+/// 残す（再構築と並行してsyncが新着を投入しても、その新着が消えない）。
+/// 未commitの文書もclear前に追加されていれば消える。
+#[test]
+fn clear_only_removes_documents_added_before_it() {
+    let index = SearchIndex::create_in_ram().unwrap();
+    index.index_message(&sample(1, "committed", "from", "body")).unwrap();
+    index.commit().unwrap();
+    index.index_message(&sample(2, "pending", "from", "body")).unwrap();
+
+    index.clear().unwrap();
+    index.index_message(&sample(3, "after", "from", "body")).unwrap();
+    index.commit().unwrap();
+
+    assert!(index.search("committed", 10).unwrap().is_empty());
+    assert!(index.search("pending", 10).unwrap().is_empty());
+    assert_eq!(index.search("after", 10).unwrap(), vec![3]);
+}
+
+/// writerの作り直しに失敗してスロットが空になった後でも、次の書き込みで
+/// 作り直しを再試行して復帰する（以前は`WriterUnavailable`のまま二度と
+/// 投入できず、再構築が0件のまま止まった）。
+#[test]
+fn empty_writer_slot_is_recreated_on_next_write() {
+    let index = SearchIndex::create_in_ram().unwrap();
+    *index.writer.lock().unwrap() = None;
+
+    index.index_message(&sample(1, "recovered", "from", "body")).unwrap();
+    index.commit().unwrap();
+    assert_eq!(index.search("recovered", 10).unwrap(), vec![1]);
+}
+
+#[test]
+fn begin_rebuild_rejects_a_second_rebuild_until_the_first_ends() {
+    let index = SearchIndex::create_in_ram().unwrap();
+    let guard = index.begin_rebuild().unwrap();
+    assert!(index.is_rebuilding());
+    assert!(matches!(index.begin_rebuild(), Err(SearchError::RebuildInProgress)));
+
+    drop(guard);
+    assert!(!index.is_rebuilding());
+    assert!(index.begin_rebuild().is_ok());
 }
 
 /// CLAUDE.mdの方針: 索引は完全にSQLite/Maildirから再構築可能な派生キャッシュ。
