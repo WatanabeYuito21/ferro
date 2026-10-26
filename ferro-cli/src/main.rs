@@ -301,15 +301,24 @@ fn run_account_command(
             println!("account #{} ({}) created.", account.id, account.name);
         }
         AccountAction::List => {
+            let statuses = ferro_core::db::sync_status::list(conn)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64);
             for account in accounts::list(conn)? {
                 println!(
-                    "#{:<4} {:<20} {}@{}:{} (use_tls={})",
+                    "#{:<4} {:<20} {}@{}:{} (use_tls={}{})",
                     account.id,
                     account.name,
                     account.username,
                     account.host,
                     account.port,
-                    account.use_tls
+                    account.use_tls,
+                    if account.uidl_supported == Some(false) { ", UIDL非対応" } else { "" }
+                );
+                println!(
+                    "      {}",
+                    ferro_core::db::sync_status::describe(statuses.get(&account.id), now)
                 );
             }
         }
