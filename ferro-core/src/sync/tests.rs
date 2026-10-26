@@ -507,7 +507,7 @@ fn sync_falls_back_to_content_hash_when_uidl_is_unsupported() {
     assert_eq!(stored.len(), 2);
     // フォールバック経路のuidlは内容ハッシュなので、サーバー側の(未使用の)uidlとは
     // 別物になる。
-    assert!(stored.iter().all(|m| m.uidl.starts_with("ferro-hash-v1-")));
+    assert!(stored.iter().all(|m| m.uidl.starts_with("ferro-hash-v2-")));
 
     // 2回目のsync呼び出し（DBに記録された uidl_supported=Some(false) を読み込んだ
     // 新しいAccount）では、UIDLは一切呼ばれず、内容ハッシュが一致するので
@@ -819,4 +819,121 @@ b" },
 
     assert_eq!(summary.server_deleted, 1);
     assert_eq!(*deleted.lock().unwrap(), vec![1u32]); // "old"のみ
+}
+
+/// 実際に踏んだサーバーの再現: UIDL非対応で、(1)1接続あたりRETRを`retr_cap`通
+/// 返したら応答せず切断し、(2)RETRのたびに経路上のゲートウェイが
+/// `X-WatchGuard-Spam-ID`を付け替える（同じメールでも毎回バイト列が変わる）。
+fn spawn_capped_volatile_server(count: usize, retr_cap: usize) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let retr_counter = Arc::new(AtomicUsize::new(0));
+
+    thread::spawn(move || {
+        for stream in listener.incoming().take(200) {
+            let mut stream = stream.unwrap();
+            stream.write_all(b"+OK fake pop3 ready\r\n").unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut retrs_this_session = 0usize;
+
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                let line = line.trim_end();
+
+                if line.starts_with("USER") || line.starts_with("PASS") {
+                    stream.write_all(b"+OK\r\n").unwrap();
+                } else if line == "UIDL" {
+                    break; // 応答せず切断（UIDL非対応）
+                } else if line == "LIST" {
+                    let mut resp = String::from("+OK\r\n");
+                    for n in 1..=count {
+                        resp.push_str(&format!("{n} 200\r\n"));
+                    }
+                    resp.push_str(".\r\n");
+                    stream.write_all(resp.as_bytes()).unwrap();
+                } else if let Some(rest) = line.strip_prefix("RETR ") {
+                    if retrs_this_session >= retr_cap {
+                        break;
+                    }
+                    retrs_this_session += 1;
+                    let n: usize = rest.trim().parse().unwrap();
+                    let volatile = retr_counter.fetch_add(1, Ordering::SeqCst);
+                    let body = format!(
+                        "X-WatchGuard-Spam-ID: v=2.4 ts={volatile}\r\n\
+                         Message-ID: <msg-{n}@example.com>\r\n\
+                         Subject: message {n}\r\n\r\nbody {n}"
+                    );
+                    stream
+                        .write_all(format!("+OK {} octets\r\n", body.len()).as_bytes())
+                        .unwrap();
+                    stream.write_all(body.as_bytes()).unwrap();
+                    stream.write_all(b"\r\n.\r\n").unwrap();
+                } else if line == "QUIT" {
+                    stream.write_all(b"+OK bye\r\n").unwrap();
+                    break;
+                } else {
+                    stream.write_all(b"-ERR unknown command\r\n").unwrap();
+                }
+            }
+        }
+    });
+
+    port
+}
+
+#[test]
+fn content_uidl_ignores_headers_the_gateway_rewrites_on_every_retr() {
+    let a = b"X-WatchGuard-Spam-ID: aaa\r\nMessage-ID: <id@x>\r\nSubject: s\r\n\r\nbody";
+    let b = b"X-WatchGuard-Spam-ID: bbb\r\nMessage-ID: <id@x>\r\nSubject: s\r\n\r\nbody";
+    assert_eq!(content_uidl(a), content_uidl(b));
+
+    // Message-IDが無くても、ゲートウェイが付け替えるヘッダーは無視して本文等で判定する。
+    let c = b"X-WatchGuard-Spam-ID: aaa\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\nSubject: s\r\n\r\nbody";
+    let d = b"X-WatchGuard-Spam-ID: bbb\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\nSubject: s\r\n\r\nbody";
+    let e = b"X-WatchGuard-Spam-ID: aaa\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\nSubject: s\r\n\r\nother";
+    assert_eq!(content_uidl(c), content_uidl(d));
+    assert_ne!(content_uidl(c), content_uidl(e));
+}
+
+/// 回帰テスト: 1接続あたり少数通で切断され、かつRETRのたびにヘッダーが変わる
+/// サーバーでも、(1)同じメールが重複保存されず、(2)繰り返しsyncすれば
+/// 取得済みの先頭部分に足止めされず最後まで取り切れる。
+#[test]
+fn sync_fallback_resumes_and_does_not_duplicate_with_volatile_headers() {
+    let conn = open_in_memory().unwrap();
+    let maildir_base = tempdir().unwrap();
+    let search_index = make_search_index();
+
+    let total = 100;
+    let port = spawn_capped_volatile_server(total, 25);
+    let mut account = make_account(&conn, port);
+
+    let mut done = false;
+    for _ in 0..15 {
+        let summary = sync_account_with_limit(
+            &conn,
+            maildir_base.path(),
+            &account,
+            "pw",
+            true,
+            None,
+            &search_index,
+            &LabelRulesFile::default(),
+            None,
+            |_, _| {},
+        )
+        .unwrap();
+        account = accounts::get(&conn, account.id).unwrap().unwrap();
+        if summary.remaining == 0 && !summary.ended_early {
+            done = true;
+            break;
+        }
+    }
+    assert!(done, "sync should eventually catch up");
+
+    let stored = messages::list_recent(&conn, Some(account.id), None, 1000).unwrap();
+    assert_eq!(stored.len(), total, "each message must be stored exactly once");
 }
