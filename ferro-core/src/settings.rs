@@ -58,6 +58,11 @@ pub struct Settings {
     /// `retention_days`とは独立。ローカルに保存済みのメールだけが対象で、
     /// UIDL非対応アカウント（内容ハッシュのフォールバック経路）は対象外。
     pub server_delete_days: i64,
+    /// GUIが1日1回、新しいバージョンが出ていないか確認し、あればバナーで
+    /// 更新を促すか（既定はオン）。確認するだけで、ダウンロード・インストールは
+    /// 利用者がバナーから操作したときだけ行う（`frontend/src/lib/updater.svelte.js`）。
+    /// CLI/TUIは自動更新の対象外なので使わない。
+    pub auto_update_check: bool,
 }
 
 impl Default for Settings {
@@ -73,6 +78,7 @@ impl Default for Settings {
             font_size: "medium".to_string(),
             retention_days: 0,
             server_delete_days: 0,
+            auto_update_check: true,
         }
     }
 }
@@ -239,6 +245,7 @@ mod tests {
             font_size: "large".to_string(),
             retention_days: 90,
             server_delete_days: 30,
+            auto_update_check: false,
         };
         save(&path, &custom).unwrap();
         assert_eq!(load(&path).unwrap(), custom);

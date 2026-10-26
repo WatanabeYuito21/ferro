@@ -286,7 +286,14 @@
   フロントが設定画面の「アップデート」セクションへ移動してから確認を始める）を押したときだけ
   `check()`→`downloadAndInstall()`→`relaunch()`を行う（起動時の自動確認はしない）。
   進捗状態は画面切り替えで作り直される`SettingsView`ではなく
-  `frontend/src/lib/updater.svelte.js`のモジュール状態に持たせている。更新元は
+  `frontend/src/lib/updater.svelte.js`のモジュール状態に持たせている。
+  v0.0.20で**1日1回の自動確認**を追加（`Settings::auto_update_check`、既定オン）。
+  `startDailyUpdateCheck`が起動10秒後と以後1時間ごとに「前回確認から24時間経ったか」を
+  見て、経っていれば`check()`だけ行い、新バージョンがあればメイン画面上部のバナー
+  （「今すぐ更新」/「後で」）で知らせる。自動確認ではダウンロード・インストールはしない。
+  最終確認時刻はlocalStorage（`ferro.lastUpdateCheck`）。通信エラー時は黙って諦め、
+  時刻を更新しないので1時間後に再試行する。「後で」で閉じても、翌日の確認でまだ
+  新バージョンがあれば再表示する。更新元は
   `https://github.com/WatanabeYuito21/ferro/releases/latest/download/latest.json`
   （publicリポジトリなので認証不要）。`release.yml`のreleaseジョブが各プラットフォームの
   `.sig`（`createUpdaterArtifacts: true`でビルド時に生成）から`latest.json`を`jq`で組み立てて
