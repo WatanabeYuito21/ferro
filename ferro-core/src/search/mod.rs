@@ -22,6 +22,7 @@ use tantivy::tokenizer::{LowerCaser, RemoveLongFilter, TextAnalyzer};
 use tantivy::{Index, IndexReader, IndexWriter, Order, ReloadPolicy, Term, doc};
 
 mod cjk_tokenizer;
+pub mod highlight;
 pub mod query;
 use cjk_tokenizer::CjkBigramTokenizer;
 use query::{TextField, TextTerm};

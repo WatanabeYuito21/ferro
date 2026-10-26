@@ -3,8 +3,10 @@
   // (ferro_core::mail::parse::extract_plain_text_body)でタグを剥がした
   // テキストに変換済みなので、ここは<pre>にテキスト補間で描画するだけで済み、
   // HTMLとして解釈されることはない。
+  import { tick } from 'svelte'
   import { invoke } from '@tauri-apps/api/core'
   import { save } from '@tauri-apps/plugin-dialog'
+  import { highlightSegments, needlesFor } from './highlight.js'
 
   // `onChanged(id, patch)`: 操作でメッセージの状態が変わったら、変わった項目だけを渡す
   // （一覧側はその行に当てるだけで済む。`messageView.js`参照）。削除・スヌーズ等で
@@ -17,7 +19,26 @@
     onChanged = () => {},
     // スレッドの別のメッセージを開く（一覧の選択もそのメッセージに移す）。
     onOpenMessage = () => {},
+    // 検索結果から開いた時の検索語（`highlight_terms`の結果）。一致した箇所を強調する。
+    highlightTerms = [],
   } = $props()
+
+  let container = $state(null)
+
+  let subjectSegments = $derived(
+    highlightSegments(detail?.subject ?? '(no subject)', needlesFor(highlightTerms, 'subject')),
+  )
+  let fromSegments = $derived(highlightSegments(detail?.from_name ?? '', needlesFor(highlightTerms, 'from')))
+  let fromAddrSegments = $derived(
+    highlightSegments(detail?.from_addr ?? 'unknown', needlesFor(highlightTerms, 'from')),
+  )
+  let bodySegments = $derived(highlightSegments(detail?.body ?? '(no body)', needlesFor(highlightTerms, 'body')))
+  let bodyMatchCount = $derived(bodySegments.filter((s) => s.match).length)
+
+  // 本文の最初の一致箇所まで送る（長いアラートの本文で、どこに当たったか探さずに済むように）。
+  function scrollToFirstMatch() {
+    container?.querySelector('pre.body mark')?.scrollIntoView({ block: 'center' })
+  }
 
   let detail = $state(null)
   let error = $state('')
@@ -57,6 +78,7 @@
       .then((d) => {
         if (cancelled) return
         detail = d
+        if (highlightTerms.length > 0) tick().then(scrollToFirstMatch)
         // 開いたら既読にする（一般的なメールクライアントの挙動に合わせる）。
         // 「既読にするまでの時間」設定がONなら2秒表示してから既読化する
         // （その前に閉じる/別メールへ切り替えたらタイマーはキャンセルする）。
@@ -279,7 +301,9 @@
   }
 </script>
 
-<div class="detail">
+{#snippet marked(segments)}{#each segments as segment, i (i)}{#if segment.match}<mark>{segment.text}</mark>{:else}{segment.text}{/if}{/each}{/snippet}
+
+<div class="detail" bind:this={container}>
   <button type="button" class="close" onclick={onClose}>閉じる</button>
 
   {#if error}
@@ -333,7 +357,7 @@
       {/if}
     </div>
 
-    <h3>{detail.subject ?? '(no subject)'}</h3>
+    <h3>{@render marked(subjectSegments)}</h3>
     {#if detail.labels.length > 0}
       <div class="chips">
         {#each detail.labels as label (label.id)}
@@ -343,7 +367,7 @@
     {/if}
     <dl>
       <dt>From</dt>
-      <dd>{detail.from_name ?? ''} &lt;{detail.from_addr ?? 'unknown'}&gt;</dd>
+      <dd>{@render marked(fromSegments)} &lt;{@render marked(fromAddrSegments)}&gt;</dd>
       {#if detail.to_addr}
         <dt>To</dt>
         <dd>{detail.to_addr}</dd>
@@ -402,9 +426,14 @@
           onclick={() => (viewMode = mode)}>{label}</button
         >
       {/each}
+      {#if viewMode === 'body' && bodyMatchCount > 0}
+        <button type="button" class="match-count" onclick={scrollToFirstMatch}>
+          本文の一致 {bodyMatchCount}件
+        </button>
+      {/if}
     </div>
     {#if viewMode === 'body'}
-      <pre class="body">{detail.body ?? '(no body)'}</pre>
+      <pre class="body">{@render marked(bodySegments)}</pre>
     {:else if sourceError}
       <p class="error">{sourceError}</p>
     {:else if source === null}
@@ -660,6 +689,17 @@
     background: var(--accent-soft-bg);
     border-color: var(--accent);
     color: var(--text);
+  }
+  .match-count {
+    margin-left: auto;
+    border: none !important;
+    background: none !important;
+    color: var(--accent) !important;
+  }
+  mark {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+    color: inherit;
+    border-radius: 2px;
   }
   .body.source {
     font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
