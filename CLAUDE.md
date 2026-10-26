@@ -482,6 +482,29 @@
   `None`なら次の書き込み時に作り直しを再試行する`writer_slot`、(d) commit失敗・writer
   作り直し・再構築の開始/終了/失敗を`ferro.log`に出す。次に同様の停止が起きたら
   まず`ferro.log`の`search:`/`reindex:`行を見ること。
+  **0.0.23でも再発し、真因が判明した（v0.0.24で修正）**: 0.0.23で再構築すると
+  `reindex: started`の直後から、`search:`の行を1つも出さずに止まった。実データ
+  （7.2万件）を一時ディレクトリの索引へ投入する調査用プログラムで再現し、
+  tantivyのワーカースレッドが新しいセグメントファイル（`.pos`）の作成で
+  `PermissionDenied`（「アクセスが拒否されました」）を受けて死んでいることが分かった
+  （下記「`IndexWriter`がWindows実機で断続的に死ぬ」と同じ現象。発生位置は毎回違う）。
+  ワーカーが死ぬと以後の`add_document`は"An index writer was killed"で即失敗するが、
+  writerの作り直しは`commit`失敗時にしか行っておらず、`index_message`で失敗した
+  バッチはcommitまで到達しないため、二度と作り直されなかった。そのうえ
+  `with_commit_retry`（8回）が尽きると1件ずつのフォールバック（1件につき8回、
+  約8.4秒）に入り、writerが死んだまま1000件分（2時間超）をログも出さずに待ち続けた。
+  CPUがほぼ0で進捗も0のままという症状はこれ。0.0.22で`None`スロットを疑ったのは
+  外れで、0.0.23の`writer_slot`は無関係だった。対策: (a) `index_message`で
+  `add_document`が失敗したら、その場で`commit`を呼んで死んだワーカーの実際のエラーを
+  取り出して`ferro.log`に書き、`recover_writer`で作り直す、(b) 1件ずつの
+  フォールバックが3件連続で失敗したら（特定のメールではなくwriter自体が使えない）
+  バッチを諦めてエラーを返す（`MAX_CONSECUTIVE_FALLBACK_FAILURES`）、(c) バッチが
+  フォールバックに入ったこと・諦めたことも`ferro.log`に出す。回帰テストは
+  `.pos`の作成を1回だけ失敗させる`FlakyDirectory`で同じ状況を作る
+  （`index_message_recreates_the_writer_after_its_worker_dies`）。
+  なお`logging::log_line`はテストビルドでは何もしない（テストがわざと失敗経路を
+  踏むたびに、利用者の本物の`ferro.log`へ書き込んでいた）。
+  教訓: 「失敗したらリトライ」の経路に、失敗をログへ残さず長時間待つ箇所を作らないこと。
 - **SQLiteのクエリで`(?1 IS NULL OR col = ?1)`のようなOR分岐を書くと**、インデックスを使った
   範囲検索（SEARCH）ではなくCOVERING SCAN + 一時B-treeソートにフォールバックしやすい。
   新しいクエリを書く際は`EXPLAIN QUERY PLAN`で`SCAN`ではなく`SEARCH`になっているか確認すること。
@@ -526,7 +549,10 @@
   原因はマージ/GCワーカースレッドの異常終了とみられ、アンチウイルス/EDR（Microsoft Defender
   for Endpoint等）のリアルタイムスキャンによるファイルI/O競合が疑わしいが未確定。一度死んだ
   `IndexWriter`はそのDirectoryに対する以後の`add_document`/`commit`が全て同じエラーで
-  失敗し続ける。対策として`SearchIndex`は`commit`失敗時に新しい`IndexWriter`を作り直す
+  失敗し続ける。実データでの再現では、直接の原因はワーカーが新しいセグメントファイル
+  （`.pos`）を作ろうとして受けた`PermissionDenied`（OSエラー5）だった（v0.0.24。
+  上記「再構築が0件のまま止まる」参照）。対策として`SearchIndex`は`commit`失敗時と
+  `index_message`の`add_document`失敗時（v0.0.24から）に新しい`IndexWriter`を作り直す
   自己修復（`recover_writer`）を持つが、**古いwriterを先にdrop（ロックファイル解放）してから
   新しいwriterを作らないと`LockFailure`になる**点に注意（一度実装を誤り、直後に修正した）。
   ワーカースレッド数が多いほどファイルI/Oの同時発生量が増えて衝突機会も増えると考えられるため、
