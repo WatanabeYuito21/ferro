@@ -7,6 +7,12 @@
     labels = [],
     selectedFolder = 'inbox',
     selectedLabelId = null,
+    // 保存した検索（{ name, query, unread }）。`activeSavedQuery`は今表示中の検索の文字列
+    // （検索していなければnull）で、一致する行を選択中として出す。
+    savedSearches = [],
+    activeSavedQuery = null,
+    onSelectSavedSearch = () => {},
+    onDeleteSavedSearch = async () => {},
     onSelectFolder = () => {},
     onSelectLabel = () => {},
     onCreateLabel = async () => {},
@@ -34,6 +40,13 @@
     return folderCounts[key] ?? 0
   }
 
+  // 検索中は通常のフォルダ/ラベルを選択中として出さない（保存した検索の方を出す）。
+  let searching = $derived(activeSavedQuery !== null)
+
+  function unreadLabel(count) {
+    return count >= 1000 ? '999+' : String(count)
+  }
+
   async function submitNewLabel() {
     if (!newLabelName.trim()) return
     createError = ''
@@ -54,15 +67,40 @@
       <button
         type="button"
         class="row"
-        class:active={selectedFolder === folder.key && selectedLabelId === null}
+        class:active={!searching && selectedFolder === folder.key && selectedLabelId === null}
         onclick={() => onSelectFolder(folder.key)}
       >
-        <span class="dot" class:dot-visible={selectedFolder === folder.key && selectedLabelId === null}></span>
+        <span class="dot" class:dot-visible={!searching && selectedFolder === folder.key && selectedLabelId === null}></span>
         <span class="name">{folder.name}</span>
         <span class="count">{folderCount(folder.key)}</span>
       </button>
     {/each}
   </div>
+
+  {#if savedSearches.length > 0}
+    <div class="section-header">
+      <span>保存した検索</span>
+    </div>
+    <div class="labels">
+      {#each savedSearches as search, index (search.name)}
+        <div class="row label-row" class:active={activeSavedQuery === search.query}>
+          <button type="button" class="row-main" title={search.query} onclick={() => onSelectSavedSearch(index)}>
+            <span class="search-icon" aria-hidden="true">⌕</span>
+            <span class="name">{search.name}</span>
+            {#if search.unread > 0}
+              <span class="count">{unreadLabel(search.unread)}</span>
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="delete-label"
+            title="保存した検索を削除"
+            onclick={() => onDeleteSavedSearch(index)}
+          >×</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
 
   <div class="section-header">
     <span>ラベル</span>
@@ -93,7 +131,7 @@
 
   <div class="labels">
     {#each labels as label (label.id)}
-      <div class="row label-row" class:active={selectedLabelId === label.id}>
+      <div class="row label-row" class:active={!searching && selectedLabelId === label.id}>
         <button type="button" class="row-main" onclick={() => onSelectLabel(label.id)}>
           <span class="dot dot-visible" style="background: {label.color};"></span>
           <span class="name">{label.name}</span>
@@ -235,6 +273,13 @@
   }
   .label-row:hover .delete-label {
     visibility: visible;
+  }
+  .search-icon {
+    width: 8px;
+    flex: none;
+    color: var(--text-faint);
+    font-size: 13px;
+    line-height: 1;
   }
   .new-label-form {
     display: flex;

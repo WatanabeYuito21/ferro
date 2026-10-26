@@ -21,6 +21,7 @@ use ferro_core::message_filter::MessageFilter;
 use ferro_core::search::SearchIndex;
 use ferro_core::settings::Settings;
 use ferro_core::sync::SyncSummary;
+use ferro_core::saved_searches::{self, SavedSearch};
 use ferro_core::{maildir, paths, reindex, settings, sync};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -933,6 +934,51 @@ fn label_rules_config_path() -> String {
     paths::label_rules_config_path().display().to_string()
 }
 
+#[derive(Serialize)]
+struct SavedSearchView {
+    name: String,
+    query: String,
+    /// 未読の件数（`saved_searches::UNREAD_COUNT_CAP`まで）。
+    unread: usize,
+}
+
+/// 保存した検索の一覧を、それぞれの未読数を付けて返す（サイドバー用）。未読数を数えられ
+/// なかった検索（書式の誤り等）は0にする（一覧自体は出したいため）。
+#[tauri::command(async)]
+fn list_saved_searches(state: State<AppState>, utc_offset_seconds: Option<i64>) -> Result<Vec<SavedSearchView>, String> {
+    let file = saved_searches::load(&paths::saved_searches_config_path()).map_err(|e| e.to_string())?;
+    let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
+    Ok(file
+        .searches
+        .into_iter()
+        .map(|search| {
+            let unread = saved_searches::unread_count(
+                &conn,
+                &state.search_index,
+                &search.query,
+                utc_offset_seconds.unwrap_or(0),
+            )
+            .unwrap_or(0);
+            SavedSearchView { name: search.name, query: search.query, unread }
+        })
+        .collect())
+}
+
+/// 検索を保存する（同じ名前があれば検索条件を置き換える）。
+#[tauri::command]
+fn add_saved_search(name: String, query: String) -> Result<(), String> {
+    saved_searches::add(&paths::saved_searches_config_path(), SavedSearch { name, query })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_saved_search(index: usize) -> Result<(), String> {
+    saved_searches::remove(&paths::saved_searches_config_path(), index)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// 既存の全メッセージへ遡って受信ルールを適用する（「今すぐ適用」ボタン）。戻り値は変わったメッセージの件数。
 /// `purge_expired_messages`と同じ理由で`spawn_blocking`に逃がす（1000万件規模だと
 /// 数秒〜数十秒かかりうる重い処理のため）。
@@ -1653,6 +1699,9 @@ pub fn run() {
             save_attachment,
             save_message_eml,
             get_message_source,
+            list_saved_searches,
+            add_saved_search,
+            remove_saved_search,
             set_read,
             set_flagged,
             set_deleted,
