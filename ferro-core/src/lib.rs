@@ -6,6 +6,7 @@ pub mod account_setup;
 pub mod color_rules;
 pub mod credentials;
 pub mod db;
+pub mod dedupe;
 pub mod label_rules;
 pub mod logging;
 pub mod mail;

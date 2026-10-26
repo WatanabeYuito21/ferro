@@ -54,6 +54,12 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// UIDL非対応アカウントの重複メッセージを検出する。既定は件数を表示するだけで
+    /// 何も変更しない。`--apply`を付けると重複をDB/Maildir/検索インデックスから消す
+    Dedupe {
+        #[arg(long)]
+        apply: bool,
+    },
     /// 全メッセージから検索インデックスを作り直す（DB/Maildirから再構築可能な派生キャッシュ）
     Reindex,
     /// 開発用: 大量の合成メッセージでSQLite挿入/Tantivy索引/一覧/検索のスループット・
@@ -178,6 +184,7 @@ fn main() -> anyhow::Result<()> {
         } => run_list_command(&conn, account, before, limit)?,
         Command::Search { query, limit } => run_search_command(&conn, &search_index, &query, limit)?,
         Command::Reindex => run_reindex_command(&conn, &search_index)?,
+        Command::Dedupe { apply } => run_dedupe_command(&conn, &search_index, apply)?,
         Command::Bench { count } => bench::run(count)?,
         Command::Read { message_id, unread } => {
             messages::set_read(&conn, message_id, !unread)?;
@@ -383,6 +390,30 @@ fn format_message_line(message: &messages::Message) -> String {
         message.subject.as_deref().unwrap_or("(no subject)"),
         message.date_header,
     )
+}
+
+fn run_dedupe_command(
+    conn: &ferro_core::db::Connection,
+    search_index: &SearchIndex,
+    apply: bool,
+) -> anyhow::Result<()> {
+    let groups = ferro_core::dedupe::find_duplicates(conn)?;
+    let removable: usize = groups.iter().map(|g| g.remove_ids.len()).sum();
+    println!(
+        "{} duplicate group(s), {removable} row(s) would be removed (UIDL-unsupported accounts only).",
+        groups.len()
+    );
+    if !apply {
+        println!("dry run: nothing was changed. re-run with --apply to remove them.");
+        return Ok(());
+    }
+    let summary =
+        ferro_core::dedupe::remove_duplicates(conn, &paths::maildir_dir(), search_index, &groups)?;
+    println!(
+        "removed {} duplicate message(s) in {} group(s); {} skipped (run again to retry).",
+        summary.removed, summary.groups, summary.skipped
+    );
+    Ok(())
 }
 
 fn run_reindex_command(

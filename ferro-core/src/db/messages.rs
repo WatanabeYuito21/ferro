@@ -79,6 +79,22 @@ pub fn exists_by_uidl(conn: &Connection, account_id: i64, uidl: &str) -> rusqlit
     .map(|found| found.is_some())
 }
 
+/// 同じアカウントに同じ`Message-ID`ヘッダーのメッセージが保存済みか。
+/// UIDL非対応サーバー向けフォールバックの重複判定用（`sync::is_known_by_content`）。
+pub fn exists_by_message_id(
+    conn: &Connection,
+    account_id: i64,
+    message_id: &str,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT 1 FROM messages WHERE account_id = ?1 AND message_id_header = ?2 LIMIT 1",
+        params![account_id, message_id],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
+}
+
 /// uidlに対応する保存済みメッセージの`date_header`。未取得ならNone。
 pub fn date_header_by_uidl(
     conn: &Connection,
