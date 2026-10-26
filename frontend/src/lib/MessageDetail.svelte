@@ -29,6 +29,7 @@
     detail = null
     error = ''
     saveStatus = {}
+    emlStatus = ''
     showLabelPicker = false
     showSnoozeMenu = false
     let cancelled = false
@@ -152,6 +153,27 @@
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
 
+  let emlStatus = $state('')
+
+  // 生メールそのもの（Maildirに保存しているバイト列）を.emlとして書き出す。
+  // 他のメーラーで開いたり、ヘッダーを確認したりするのに使う。
+  async function saveEml() {
+    if (!detail) return
+    emlStatus = ''
+    try {
+      const destination = await save({
+        defaultPath: detail.eml_filename,
+        filters: [{ name: 'メール (.eml)', extensions: ['eml'] }],
+      })
+      if (!destination) return
+      emlStatus = '保存中…'
+      await invoke('save_message_eml', { messageId, destinationPath: destination })
+      emlStatus = '保存しました'
+    } catch (e) {
+      emlStatus = `エラー: ${e}`
+    }
+  }
+
   async function saveAttachment(attachment) {
     saveStatus = { ...saveStatus, [attachment.index]: 'saving…' }
     try {
@@ -216,7 +238,11 @@
       <button type="button" onclick={toggleFlag} disabled={flagging}>
         {detail.is_flagged ? 'スター解除' : 'スター'}
       </button>
+      <button type="button" onclick={saveEml}>.emlとして保存…</button>
       <button type="button" class="danger" onclick={deleteMessage} disabled={deleting}>削除</button>
+      {#if emlStatus}
+        <span class="status toolbar-status">{emlStatus}</span>
+      {/if}
     </div>
 
     <h3>{detail.subject ?? '(no subject)'}</h3>
@@ -400,6 +426,9 @@
   .status {
     color: var(--text-muted);
     font-size: 0.85em;
+  }
+  .toolbar-status {
+    align-self: center;
   }
   .body {
     white-space: pre-wrap;
