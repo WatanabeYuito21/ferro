@@ -6,6 +6,9 @@
   import { invoke } from '@tauri-apps/api/core'
   import { save } from '@tauri-apps/plugin-dialog'
 
+  // `onChanged(id, patch)`: 操作でメッセージの状態が変わったら、変わった項目だけを渡す
+  // （一覧側はその行に当てるだけで済む。`messageView.js`参照）。削除・スヌーズ等で
+  // 表示中のフォルダから外れた場合に次のメッセージへ進むか閉じるかは呼び出し側が決める。
   let {
     messageId,
     allLabels = [],
@@ -23,6 +26,9 @@
   let snoozing = $state(false)
   let showLabelPicker = $state(false)
   let showSnoozeMenu = $state(false)
+  let emlStatus = $state('')
+  // 「既読にするまでの時間」の待ち中なら、そのタイマー（`u`で未読に戻した時に止める）。
+  let readTimer = null
 
   $effect(() => {
     const id = messageId
@@ -32,8 +38,11 @@
     emlStatus = ''
     showLabelPicker = false
     showSnoozeMenu = false
+    flagging = false
+    deleting = false
+    archiving = false
+    snoozing = false
     let cancelled = false
-    let readTimer = null
 
     invoke('get_message_detail', { messageId: id })
       .then((d) => {
@@ -47,8 +56,10 @@
         // ―― 同期完了時など ―― で追いつく）。
         if (!d.is_read) {
           const markRead = async () => {
+            readTimer = null
             try {
               await invoke('set_read', { messageId: id, isRead: true })
+              onChanged(id, { is_read: true })
               if (!cancelled) detail = { ...detail, is_read: true }
             } catch {
               // 既読化の失敗は表示自体を妨げるものではないので無視する。
@@ -68,17 +79,20 @@
     return () => {
       cancelled = true
       if (readTimer) clearTimeout(readTimer)
+      readTimer = null
     }
   })
 
-  async function toggleFlag() {
-    if (!detail) return
+  // 以下の`export`した操作は、ツールバーのボタンとApp.svelteのキーボード操作の両方から呼ぶ。
+
+  export async function toggleFlag() {
+    if (!detail || flagging) return
     flagging = true
     try {
       const next = !detail.is_flagged
       await invoke('set_flagged', { messageId, isFlagged: next })
       detail = { ...detail, is_flagged: next }
-      onChanged()
+      onChanged(messageId, { is_flagged: next })
     } catch (e) {
       error = String(e)
     } finally {
@@ -86,14 +100,14 @@
     }
   }
 
-  async function toggleArchive() {
-    if (!detail) return
+  export async function toggleArchive() {
+    if (!detail || archiving) return
     archiving = true
     try {
       const next = !detail.is_archived
       await invoke('set_archived', { messageId, isArchived: next })
       detail = { ...detail, is_archived: next }
-      onChanged()
+      onChanged(messageId, { is_archived: next })
     } catch (e) {
       error = String(e)
     } finally {
@@ -101,15 +115,47 @@
     }
   }
 
+  export async function toggleRead() {
+    if (!detail) return
+    if (readTimer) {
+      clearTimeout(readTimer)
+      readTimer = null
+    }
+    const next = !detail.is_read
+    try {
+      await invoke('set_read', { messageId, isRead: next })
+      detail = { ...detail, is_read: next }
+      onChanged(messageId, { is_read: next })
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  export function toggleSnoozeMenu() {
+    if (!detail) return
+    showLabelPicker = false
+    showSnoozeMenu = !showSnoozeMenu
+  }
+
+  export function toggleLabelPicker() {
+    if (!detail) return
+    showSnoozeMenu = false
+    showLabelPicker = !showLabelPicker
+  }
+
+  // スヌーズの期限そのものはRust側(`set_snoozed`)が計算する。一覧の行に当てる値は
+  // 「今より未来」でさえあればよい（受信箱/スヌーズのどちらに属するかの判定だけに使う）。
+  const SNOOZE_SECONDS = { '1d': 24 * 60 * 60, '3d': 3 * 24 * 60 * 60, '1w': 7 * 24 * 60 * 60 }
+
   async function snooze(preset) {
     showSnoozeMenu = false
     snoozing = true
     try {
       await invoke('set_snoozed', { messageId, preset })
-      onChanged()
-      onClose()
+      onChanged(messageId, { snoozed_until: Math.floor(Date.now() / 1000) + SNOOZE_SECONDS[preset] })
     } catch (e) {
       error = String(e)
+    } finally {
       snoozing = false
     }
   }
@@ -119,26 +165,25 @@
     const has = detail.labels.some((l) => l.id === label.id)
     try {
       await invoke('set_message_label', { messageId, labelId: label.id, assigned: !has })
-      detail = {
-        ...detail,
-        labels: has
-          ? detail.labels.filter((l) => l.id !== label.id)
-          : [...detail.labels, label],
-      }
-      onChanged()
+      const labels = has
+        ? detail.labels.filter((l) => l.id !== label.id)
+        : [...detail.labels, { id: label.id, name: label.name, color: label.color }]
+      detail = { ...detail, labels }
+      onChanged(messageId, { labels })
     } catch (e) {
       error = String(e)
     }
   }
 
-  async function deleteMessage() {
+  export async function deleteMessage() {
+    if (!detail || deleting) return
     deleting = true
     try {
       await invoke('set_deleted', { messageId, isDeleted: true })
-      onChanged()
-      onClose()
+      onChanged(messageId, { is_deleted: true })
     } catch (e) {
       error = String(e)
+    } finally {
       deleting = false
     }
   }
@@ -152,8 +197,6 @@
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   }
-
-  let emlStatus = $state('')
 
   // 生メールそのもの（Maildirに保存しているバイト列）を.emlとして書き出す。
   // 他のメーラーで開いたり、ヘッダーを確認したりするのに使う。
@@ -237,6 +280,9 @@
       </div>
       <button type="button" onclick={toggleFlag} disabled={flagging}>
         {detail.is_flagged ? 'スター解除' : 'スター'}
+      </button>
+      <button type="button" onclick={toggleRead}>
+        {detail.is_read ? '未読にする' : '既読にする'}
       </button>
       <button type="button" onclick={saveEml}>.emlとして保存…</button>
       <button type="button" class="danger" onclick={deleteMessage} disabled={deleting}>削除</button>
