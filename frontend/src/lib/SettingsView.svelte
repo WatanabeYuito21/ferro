@@ -206,6 +206,7 @@
       const r = await invoke('optimize_storage')
       optimizeStatus =
         `${formatBytes(r.freed)}を空けました（データベース ${formatBytes(r.db_before)} → ${formatBytes(r.db_after)}、` +
+        `メール ${formatBytes(r.mail_before)} → ${formatBytes(r.mail_after)}、` +
         `検索インデックス ${formatBytes(r.index_before)} → ${formatBytes(r.index_after)}）`
     } catch (e) {
       optimizeStatus = `エラー: ${e}`

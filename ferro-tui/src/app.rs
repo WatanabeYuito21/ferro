@@ -336,10 +336,12 @@ impl App {
                 BackgroundEvent::OptimizeFinished { result } => {
                     self.status = Some(match result {
                         Ok(report) => format!(
-                            "最適化しました: {:.1}MB空きました（DB {:.1}→{:.1}MB、索引 {:.1}→{:.1}MB）",
+                            "最適化しました: {:.1}MB空きました（DB {:.1}→{:.1}MB、メール {:.1}→{:.1}MB、索引 {:.1}→{:.1}MB）",
                             report.freed() as f64 / 1_048_576.0,
                             report.db_before as f64 / 1_048_576.0,
                             report.db_after as f64 / 1_048_576.0,
+                            report.mail_before as f64 / 1_048_576.0,
+                            report.mail_after as f64 / 1_048_576.0,
                             report.index_before as f64 / 1_048_576.0,
                             report.index_after as f64 / 1_048_576.0,
                         ),
@@ -490,6 +492,7 @@ impl App {
                 Ok(conn) => ferro_core::maintenance::optimize(
                     &conn,
                     &paths::db_path(),
+                    &paths::maildir_dir(),
                     &search_index,
                     &paths::search_index_dir(),
                 )
