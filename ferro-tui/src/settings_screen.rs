@@ -567,14 +567,30 @@ fn item_line<'a>(app: &'a App, item: &'a Item, width: usize) -> Line<'a> {
         Item::AddColorRule => Line::styled("  ＋ 色分けルールを追加", Style::default().fg(Color::Green)),
         Item::Account(index) => {
             let account = &app.accounts[*index];
-            Line::from(format!(
-                "  {} — {}@{}:{} ({})",
-                account.name,
-                account.username,
-                account.host,
-                account.port,
-                if account.use_tls { "TLS" } else { "平文" }
-            ))
+            let status = app.sync_statuses.get(&account.id);
+            let failing = status.is_some_and(|s| s.last_error.is_some());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64);
+            Line::from(vec![
+                Span::raw(format!(
+                    "  {} — {}@{}:{} ({}{})",
+                    account.name,
+                    account.username,
+                    account.host,
+                    account.port,
+                    if account.use_tls { "TLS" } else { "平文" },
+                    if account.uidl_supported == Some(false) { "、UIDL非対応" } else { "" }
+                )),
+                Span::styled(
+                    format!("  {}", ferro_core::db::sync_status::describe(status, now)),
+                    if failing {
+                        Style::default().fg(Color::Red)
+                    } else {
+                        Style::default().add_modifier(Modifier::DIM)
+                    },
+                ),
+            ])
         }
         Item::AddAccount => Line::styled("  ＋ アカウントを追加", Style::default().fg(Color::Green)),
         Item::Reindex => row("検索インデックスを再構築", "Enter / R".to_string()),

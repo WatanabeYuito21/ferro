@@ -98,6 +98,8 @@ pub struct App {
     pub color_rules: Vec<ColorRule>,
     pub settings: Settings,
     pub accounts: Vec<Account>,
+    /// アカウントごとの直近の同期結果（設定画面のアカウント一覧に出す）。
+    pub sync_statuses: std::collections::HashMap<i64, ferro_core::db::sync_status::SyncStatus>,
 
     /// スヌーズ確認待ち（`z`の後に1/3/7のいずれかを待つ状態）。
     pub awaiting_snooze_choice: bool,
@@ -145,6 +147,7 @@ impl App {
             color_rules: Vec::new(),
             settings: Settings::default(),
             accounts: Vec::new(),
+            sync_statuses: std::collections::HashMap::new(),
             awaiting_snooze_choice: false,
             settings_cursor: 0,
             settings_form: None,
@@ -170,6 +173,7 @@ impl App {
         self.folder_counts = messages::folder_counts(&conn, None, Self::now_unix())?;
         self.labels = ferro_core::db::labels::list_with_counts(&conn)?;
         self.accounts = ferro_core::db::accounts::list(&conn)?;
+        self.sync_statuses = ferro_core::db::sync_status::list(&conn)?;
         drop(conn);
         self.settings = settings::load(&paths::settings_config_path())?;
         self.color_rules = color_rules::load(&paths::color_rules_config_path())?.rules;

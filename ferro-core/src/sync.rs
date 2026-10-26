@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use crate::db::accounts::{self, Account};
 use crate::db::messages::{self, NewMessage};
 use crate::db::now_unix;
-use crate::db::purged_uidls;
+use crate::db::{purged_uidls, sync_status};
 use crate::label_rules::{self, LabelRulesFile};
 use crate::mail::attachments;
 use crate::mail::parse::{make_preview, parse_full, raw_header_value};
@@ -87,8 +87,53 @@ const MAX_SERVER_DELETES_PER_SESSION: usize = 500;
 /// `target_total`は今回のsync呼び出しで取得予定の件数（`fetched_so_far`にこの回で
 /// 既に取得できた分を加えたもの）で、再接続をまたぐと（UIDL差分を取り直すため）
 /// 変わることがある。
+///
+/// 結果（成功・失敗）は`db::sync_status`に記録する（GUI/TUI/CLIのアカウント一覧に出す）。
 #[allow(clippy::too_many_arguments)]
 pub fn sync_account_with_limit(
+    conn: &Connection,
+    maildir_base: &Path,
+    account: &Account,
+    password: &str,
+    allow_plaintext: bool,
+    limit: Option<u32>,
+    search_index: &SearchIndex,
+    label_rules: &LabelRulesFile,
+    server_delete_before: Option<i64>,
+    on_progress: impl FnMut(u32, u32),
+) -> Result<SyncSummary, SyncError> {
+    let result = sync_account_inner(
+        conn,
+        maildir_base,
+        account,
+        password,
+        allow_plaintext,
+        limit,
+        search_index,
+        label_rules,
+        server_delete_before,
+        on_progress,
+    );
+    let recorded = match &result {
+        Ok(summary) => sync_status::record_success(
+            conn,
+            account.id,
+            now_unix(),
+            summary.fetched,
+            summary.remaining,
+            summary.ended_early,
+        ),
+        Err(e) => sync_status::record_failure(conn, account.id, now_unix(), &e.to_string()),
+    };
+    // 記録できなくても同期自体の結果は変えない（DBのエラーで失敗した同期は記録も失敗しうる）。
+    if let Err(e) = recorded {
+        crate::logging::log_line(&format!("sync: failed to record the sync status (account={:?}): {e}", account.name));
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_account_inner(
     conn: &Connection,
     maildir_base: &Path,
     account: &Account,

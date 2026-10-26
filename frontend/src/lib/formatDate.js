@@ -7,3 +7,12 @@ export function formatDate(unixSeconds) {
   const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   return `${date} ${time}`
 }
+
+// 「5分前」のような相対表示（アカウントの最終同期等）。1日以上前は日時で出す。
+export function formatRelative(unixSeconds, nowMs = Date.now()) {
+  const elapsed = Math.max(0, Math.floor(nowMs / 1000) - unixSeconds)
+  if (elapsed < 60) return 'たった今'
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}分前`
+  if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}時間前`
+  return formatDate(unixSeconds)
+}

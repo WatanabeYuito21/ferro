@@ -49,6 +49,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 10,
         sql: include_str!("../../migrations/0010_threads.sql"),
     },
+    Migration {
+        version: 11,
+        sql: include_str!("../../migrations/0011_account_sync_status.sql"),
+    },
 ];
 
 /// 未適用のマイグレーションを`schema_migrations`テーブルの記録に基づいて適用する。
