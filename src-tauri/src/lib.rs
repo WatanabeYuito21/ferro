@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -56,6 +57,29 @@ struct AppState {
     write_conn: Mutex<Connection>,
     read_conn: Mutex<Connection>,
     search_index: SearchIndex,
+    /// 実行中（`write_conn`のロック待ちを含む）の手動Syncの件数。0より大きい間、
+    /// バックグラウンド同期は新しいアカウントの同期を始めずに見送る
+    /// （`ManualSyncGuard`/`run_background_sync_once`参照）。
+    manual_syncs: AtomicUsize,
+}
+
+/// 手動Syncの実行中だけ`AppState::manual_syncs`を1つ増やすRAIIガード。
+/// 手動Syncは無制限(`limit: None`)で全件取るため、同じ`write_conn`ロックを
+/// 待つバックグラウンド同期（上限`BACKGROUND_SYNC_LIMIT`）が直後に走ると、
+/// 手動Syncの結果表示が「fetched 0」等の自動同期の結果で上書きされてしまう。
+struct ManualSyncGuard<'a>(&'a AtomicUsize);
+
+impl<'a> ManualSyncGuard<'a> {
+    fn new(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for ManualSyncGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Serialize)]
@@ -756,6 +780,7 @@ async fn sync_account(
 ) -> Result<SyncSummaryView, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _manual_guard = ManualSyncGuard::new(&state.manual_syncs);
         let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
         let account = db::accounts::get(&conn, account_id)
             .map_err(|e| e.to_string())?
@@ -1069,6 +1094,12 @@ fn run_background_sync_once(app_handle: &AppHandle) {
                 error: Some(format!("failed to read password from OS keyring: {e}")),
             },
             Ok(password) => {
+                // 手動Syncが走っている（またはロック待ち）なら、そのアカウント以降の
+                // 自動同期は次のサイクルに回す。手動Syncが全件取り終えた直後に
+                // 上限付きの自動同期が走って結果表示を上書きするのを避ける。
+                if state.manual_syncs.load(Ordering::SeqCst) > 0 {
+                    return;
+                }
                 let Ok(conn) = state.write_conn.lock() else {
                     return;
                 };
@@ -1178,6 +1209,7 @@ pub fn run() {
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
             search_index,
+            manual_syncs: AtomicUsize::new(0),
         })
         .setup(|app| {
             spawn_background_sync(app.handle().clone());
