@@ -191,6 +191,32 @@ fn index_batch_with_fallback(
     Ok(indexed_ids)
 }
 
+/// 検索インデックスの状態（設定画面の「インデックスの状態」表示用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexStatus {
+    /// 論理削除されていないメッセージの総数。
+    pub total: i64,
+    /// そのうちDBが「投入済み」と記録している件数（`fts_indexed_at`がNULLでない）。
+    pub indexed: i64,
+    /// 検索インデックスに実際に入っている文書数（最後のcommit時点）。DBの記録より
+    /// 少なければ索引の中身が欠けている（次回起動時の整合性チェックで全件の
+    /// 再投入に戻る。`db::messages::reset_all_fts_indexed`参照）。
+    pub index_docs: u64,
+    /// 全件再構築の実行中か。
+    pub rebuilding: bool,
+}
+
+/// `IndexStatus`を集める。全件のCOUNTを取るので、起動時や定期処理からではなく
+/// 利用者が画面を開いた時・押した時にだけ呼ぶこと。
+pub fn index_status(conn: &Connection, index: &SearchIndex) -> Result<IndexStatus, ReindexError> {
+    Ok(IndexStatus {
+        total: messages::count_live(conn)?,
+        indexed: messages::count_indexed(conn)?,
+        index_docs: index.num_docs(),
+        rebuilding: index.is_rebuilding(),
+    })
+}
+
 /// `index_batch_with_fallback`の1件ずつのフォールバックで、これだけ連続して
 /// 失敗したらバッチ全体を諦める。
 const MAX_CONSECUTIVE_FALLBACK_FAILURES: u32 = 3;
@@ -458,6 +484,61 @@ mod tests {
 
         drop(rebuilding);
         assert_eq!(catch_up_unindexed(&conn, maildir_dir.path(), &index, 0).unwrap().0, 1);
+    }
+
+    #[test]
+    fn index_status_reports_db_and_index_counts() {
+        let conn = open_in_memory().unwrap();
+        let maildir_dir = tempfile::tempdir().unwrap();
+        let index = SearchIndex::create_in_ram().unwrap();
+        let account_id = accounts::insert(
+            &conn,
+            &NewAccount {
+                name: "test",
+                host: "pop.example.com",
+                port: 995,
+                username: "user",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+        let raw = b"Subject: s\r\n\r\nbody";
+        for uidl in ["u1", "u2"] {
+            maildir::store(maildir_dir.path(), account_id, uidl, raw).unwrap();
+            db_messages::insert_new(
+                &conn,
+                &NewMessage {
+                    account_id,
+                    uidl,
+                    message_id_header: None,
+                    subject: Some("s"),
+                    from_name: None,
+                    from_addr: None,
+                    to_addr: None,
+                    date_header: 1,
+                    size_bytes: raw.len() as i64,
+                    attachment_count: 0,
+                    preview: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let before = index_status(&conn, &index).unwrap();
+        assert_eq!(
+            before,
+            IndexStatus { total: 2, indexed: 0, index_docs: 0, rebuilding: false }
+        );
+
+        reindex_all(&conn, maildir_dir.path(), &index).unwrap();
+        let after = index_status(&conn, &index).unwrap();
+        assert_eq!(
+            after,
+            IndexStatus { total: 2, indexed: 2, index_docs: 2, rebuilding: false }
+        );
+
+        let _rebuilding = index.begin_rebuild().unwrap();
+        assert!(index_status(&conn, &index).unwrap().rebuilding);
     }
 
     #[test]
