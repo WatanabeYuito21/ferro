@@ -63,6 +63,15 @@ pub struct Settings {
     /// 利用者がバナーから操作したときだけ行う（`frontend/src/lib/updater.svelte.js`）。
     /// CLI/TUIは自動更新の対象外なので使わない。
     pub auto_update_check: bool,
+    /// GUIのバックグラウンド同期で新着があったら、デスクトップ通知を出すか（既定はオン）。
+    /// ウィンドウを見ている間（フォーカスがある間）は出さない（画面上の「新着があります」で足りるため）。
+    pub notify_new_mail: bool,
+    /// 通知の対象にするラベル名。空なら全ての新着を通知する。指定すると、受信時の自動ラベル付け
+    /// ルールでそのどれかが付いた新着だけを通知する（`new_mail::since`）。
+    pub notify_labels: Vec<String>,
+    /// GUIのウィンドウを閉じても終了せず、システムトレイに常駐して同期を続けるか（既定はオフ）。
+    /// 終了はトレイアイコンのメニューから。
+    pub close_to_tray: bool,
 }
 
 impl Default for Settings {
@@ -79,6 +88,9 @@ impl Default for Settings {
             retention_days: 0,
             server_delete_days: 0,
             auto_update_check: true,
+            notify_new_mail: true,
+            notify_labels: Vec::new(),
+            close_to_tray: false,
         }
     }
 }
@@ -246,6 +258,9 @@ mod tests {
             retention_days: 90,
             server_delete_days: 30,
             auto_update_check: false,
+            notify_new_mail: false,
+            notify_labels: vec!["重要".to_string(), "alert".to_string()],
+            close_to_tray: true,
         };
         save(&path, &custom).unwrap();
         assert_eq!(load(&path).unwrap(), custom);

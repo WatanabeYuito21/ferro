@@ -23,7 +23,9 @@ use ferro_core::sync::SyncSummary;
 use ferro_core::{maildir, paths, reindex, settings, sync};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 
 /// 現在時刻(Unixエポック秒)。フォルダの受信箱判定(スヌーズ期限切れ)・
 /// スヌーズのプリセット計算に使う。`ferro_core::db::now_unix`は
@@ -638,6 +640,9 @@ struct SettingsView {
     retention_days: i64,
     server_delete_days: i64,
     auto_update_check: bool,
+    notify_new_mail: bool,
+    notify_labels: Vec<String>,
+    close_to_tray: bool,
 }
 
 impl From<Settings> for SettingsView {
@@ -654,6 +659,9 @@ impl From<Settings> for SettingsView {
             retention_days: s.retention_days,
             server_delete_days: s.server_delete_days,
             auto_update_check: s.auto_update_check,
+            notify_new_mail: s.notify_new_mail,
+            notify_labels: s.notify_labels,
+            close_to_tray: s.close_to_tray,
         }
     }
 }
@@ -672,6 +680,9 @@ impl From<SettingsView> for Settings {
             retention_days: s.retention_days,
             server_delete_days: s.server_delete_days,
             auto_update_check: s.auto_update_check,
+            notify_new_mail: s.notify_new_mail,
+            notify_labels: s.notify_labels,
+            close_to_tray: s.close_to_tray,
         }
     }
 }
@@ -1277,13 +1288,13 @@ struct RetentionPurgeEvent {
 fn run_background_sync_once(app_handle: &AppHandle) {
     let state = app_handle.state::<AppState>();
 
-    let accounts = {
+    let (accounts, latest_id) = {
         let Ok(conn) = state.read_conn.lock() else {
             return;
         };
-        match db::accounts::list(&conn) {
-            Ok(accounts) => accounts,
-            Err(_) => return,
+        match (db::accounts::list(&conn), ferro_core::new_mail::latest_id(&conn)) {
+            (Ok(accounts), Ok(latest_id)) => (accounts, latest_id),
+            _ => return,
         }
     };
     let label_rules = label_rules::load_or_default(&paths::label_rules_config_path());
@@ -1302,10 +1313,10 @@ fn run_background_sync_once(app_handle: &AppHandle) {
                 // 自動同期は次のサイクルに回す。手動Syncが全件取り終えた直後に
                 // 上限付きの自動同期が走って結果表示を上書きするのを避ける。
                 if state.manual_syncs.load(Ordering::SeqCst) > 0 {
-                    return;
+                    break;
                 }
                 let Ok(conn) = state.write_conn.lock() else {
-                    return;
+                    break;
                 };
                 let account_id = account.id;
                 let result = sync::sync_account_with_limit(
@@ -1341,9 +1352,90 @@ fn run_background_sync_once(app_handle: &AppHandle) {
         };
         let _ = app_handle.emit("background-sync", event);
     }
+    notify_new_mail(app_handle, latest_id);
     // sync中にTantivyのIndexWriterクラッシュ(`with_commit_retry`のドキュメント参照)で
     // 検索インデックスへの投入が漏れたメッセージの拾い直しは、呼び出し元
     // (`spawn_background_sync`)がサイクルのたびに`step_search_catchup`で行う。
+}
+
+/// メインウィンドウを見ている最中（表示されていてフォーカスがある）か。
+fn main_window_is_in_use(app_handle: &AppHandle) -> bool {
+    app_handle.get_webview_window("main").is_some_and(|window| {
+        window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+    })
+}
+
+/// バックグラウンド同期で`after_id`より後に受信したメッセージがあれば、デスクトップ通知を
+/// 出す（`settings::Settings::notify_new_mail`/`notify_labels`、`ferro_core::new_mail`参照）。
+/// ウィンドウを見ている間は、画面上の「新着メッセージがあります」で足りるので出さない。
+fn notify_new_mail(app_handle: &AppHandle, after_id: i64) {
+    let settings = settings::load_or_default(&paths::settings_config_path());
+    if !settings.notify_new_mail || main_window_is_in_use(app_handle) {
+        return;
+    }
+    let state = app_handle.state::<AppState>();
+    let new_mail = {
+        let Ok(conn) = state.read_conn.lock() else {
+            return;
+        };
+        match ferro_core::new_mail::since(&conn, after_id, &settings.notify_labels, 3) {
+            Ok(new_mail) => new_mail,
+            Err(_) => return,
+        }
+    };
+    if new_mail.count == 0 {
+        return;
+    }
+    let (title, body) = ferro_core::new_mail::notification_text(&new_mail);
+    if let Err(e) = app_handle.notification().builder().title(title).body(body).show() {
+        logging::log_line(&format!("notify: failed to show a notification: {e}"));
+    }
+}
+
+/// メインウィンドウを表示して前面に出す（トレイアイコンのクリック・メニューから）。
+fn show_main_window(app_handle: &AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+const TRAY_SHOW_ID: &str = "tray-show";
+const TRAY_SYNC_ID: &str = "tray-sync";
+const TRAY_QUIT_ID: &str = "tray-quit";
+
+/// システムトレイのアイコン。左クリックでウィンドウを表示し、右クリックのメニューから
+/// 「今すぐ同期」「終了」もできる。`close_to_tray`がオンのときはウィンドウを閉じても
+/// 終了せずここに残る（`run`の`on_window_event`参照）ので、終了はこのメニューから行う。
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItemBuilder::with_id(TRAY_SHOW_ID, "Ferroを開く").build(app)?;
+    let sync = MenuItemBuilder::with_id(TRAY_SYNC_ID, "今すぐ同期").build(app)?;
+    let quit = MenuItemBuilder::with_id(TRAY_QUIT_ID, "終了").build(app)?;
+    let menu = MenuBuilder::new(app).item(&show).item(&sync).separator().item(&quit).build()?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Ferro")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app_handle, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => show_main_window(app_handle),
+            TRAY_SYNC_ID => {
+                let app_handle = app_handle.clone();
+                std::thread::spawn(move || run_background_sync_once(&app_handle));
+            }
+            TRAY_QUIT_ID => app_handle.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
 }
 
 /// SettingsとMessages一覧はOSネイティブのメニューバーから切り替える別画面として
@@ -1414,6 +1506,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState {
             write_conn: Mutex::new(write_conn),
             read_conn: Mutex::new(read_conn),
@@ -1425,6 +1518,7 @@ pub fn run() {
             spawn_initial_search_catchup(app.handle().clone());
             spawn_retention_cleanup(app.handle().clone());
             spawn_thread_backfill();
+            build_tray(app)?;
 
             let messages_item = MenuItemBuilder::with_id(NAV_MESSAGES_ID, "Messages").build(app)?;
             let settings_item = MenuItemBuilder::with_id(NAV_SETTINGS_ID, "Settings…").build(app)?;
@@ -1440,6 +1534,17 @@ pub fn run() {
             app.set_menu(menu)?;
 
             Ok(())
+        })
+        // 「閉じたらトレイに常駐」がオンなら、閉じるボタンでは終了せずウィンドウを隠すだけにする
+        // （バックグラウンド同期と新着通知はそのまま続く）。設定は閉じる時点で読み直す。
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+                && settings::load_or_default(&paths::settings_config_path()).close_to_tray
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .on_menu_event(|app_handle, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATE_ID {

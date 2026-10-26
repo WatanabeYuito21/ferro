@@ -171,6 +171,23 @@
     }
   }
 
+  // 通知の対象にするラベル（空なら全ての新着）。チェックを付け外しするたびに保存する。
+  async function toggleNotifyLabel(name) {
+    if (!settings || saving) return
+    const current = settings.notify_labels ?? []
+    const nextLabels = current.includes(name) ? current.filter((n) => n !== name) : [...current, name]
+    const next = { ...settings, notify_labels: nextLabels }
+    settings = next
+    saving = true
+    try {
+      await invoke('update_settings', { settings: next })
+    } catch (e) {
+      error = String(e)
+    } finally {
+      saving = false
+    }
+  }
+
   let purging = $state(false)
   let purgeStatus = $state('')
 
@@ -276,6 +293,27 @@
       desc: '次回のバックグラウンド実行を待たず、保持日数を過ぎたメールを今すぐ削除します。',
       keywords: 'purge 削除 整理 クリーンアップ',
     },
+    notifyNewMail: {
+      title: '新着メールを通知',
+      desc:
+        'バックグラウンド同期で新着メールを受信したら、デスクトップ通知を出します' +
+        '（Ferroのウィンドウを見ている間は出しません）。',
+      keywords: 'notification notify 通知 デスクトップ トースト',
+    },
+    notifyLabels: {
+      title: '通知するラベル',
+      desc:
+        '選んだラベルのどれかが付いた新着だけを通知します（受信時の自動ラベル付けルールと' +
+        '組み合わせて使います）。何も選ばなければ全ての新着を通知します。',
+      keywords: 'notification label 通知 ラベル 重要 フィルタ',
+    },
+    closeToTray: {
+      title: '閉じたらトレイに常駐',
+      desc:
+        'ウィンドウを閉じても終了せず、システムトレイ（通知領域）に残って同期と通知を続けます。' +
+        '終了はトレイアイコンを右クリックして「終了」から。',
+      keywords: 'tray system tray トレイ 常駐 タスクトレイ 通知領域 最小化 終了 close',
+    },
     autoUpdateCheck: {
       title: '1日1回、更新を自動確認',
       desc: '新しいバージョンがあれば、画面上部のバナーでお知らせします（更新するかはその都度選べます）。',
@@ -318,6 +356,11 @@
       title: '保持期間',
       keywords: 'retention',
       rows: ['retentionDays', 'serverDeleteDays', 'purgeNow'],
+    },
+    notifications: {
+      title: '通知とトレイ',
+      keywords: 'notifications tray',
+      rows: ['notifyNewMail', 'notifyLabels', 'closeToTray'],
     },
     update: { title: 'アップデート', keywords: 'update', rows: ['autoUpdateCheck', 'checkUpdate'] },
     diagnostics: { title: '診断', keywords: 'diagnostics', rows: ['logFile'] },
@@ -648,6 +691,74 @@
       </div>
     {/if}
 
+    {#if showSection('notifications')}
+      <h2 class="section-title">{SECTIONS.notifications.title}</h2>
+      <div class="rows">
+        {#if showRow('notifyNewMail')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.notifyNewMail.title}</div>
+              <div class="desc">{R.notifyNewMail.desc}</div>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              class:on={settings.notify_new_mail}
+              onclick={() => toggle('notify_new_mail')}
+              aria-pressed={settings.notify_new_mail}
+              aria-label={R.notifyNewMail.title}
+            >
+              <span class="knob"></span>
+            </button>
+          </div>
+        {/if}
+        {#if showRow('notifyLabels')}
+          <div class="row row-stacked">
+            <div class="text">
+              <div class="title">{R.notifyLabels.title}</div>
+              <div class="desc">{R.notifyLabels.desc}</div>
+            </div>
+            {#if labels.length === 0}
+              <p class="notify-labels-empty">ラベルがありません（サイドバーの「ラベル」の＋から作れます）。</p>
+            {:else}
+              <div class="notify-labels">
+                {#each labels as label (label.id)}
+                  <label class="notify-label">
+                    <input
+                      type="checkbox"
+                      checked={(settings.notify_labels ?? []).includes(label.name)}
+                      disabled={!settings.notify_new_mail}
+                      onchange={() => toggleNotifyLabel(label.name)}
+                    />
+                    <span class="dot" style="background: {label.color};"></span>
+                    {label.name}
+                  </label>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+        {#if showRow('closeToTray')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.closeToTray.title}</div>
+              <div class="desc">{R.closeToTray.desc}</div>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              class:on={settings.close_to_tray}
+              onclick={() => toggle('close_to_tray')}
+              aria-pressed={settings.close_to_tray}
+              aria-label={R.closeToTray.title}
+            >
+              <span class="knob"></span>
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     {#if showSection('update')}
       <h2 class="section-title" id="update-section">{SECTIONS.update.title}</h2>
       <div class="rows">
@@ -919,6 +1030,36 @@
   }
   .reindex-progress .reindex-status {
     padding: 0;
+  }
+  .row-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .notify-labels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    font-size: 12.5px;
+  }
+  .notify-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+  }
+  .notify-label input {
+    accent-color: var(--accent);
+  }
+  .notify-label .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 3px;
+  }
+  .notify-labels-empty {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-muted);
   }
   .index-status {
     padding: 4px 0 8px;
