@@ -464,6 +464,24 @@
   `\r`で同じ行を上書き表示する。GUIの進捗状態は`frontend/src/lib/reindex.svelte.js`の
   モジュール状態（設定画面を離れても続く）。同時実行は`AppState::reindex_running`で
   2本目をエラーにする（互いの`clear`で索引を消し合うため）。
+  **再構築が0件のまま止まる（v0.0.23で修正）**: 0.0.22で実際に「0 / 72,062件から進まない」を
+  踏んだ。DBの`fts_indexed_at`の記録から追うと、(1)直前の再構築が中断されて索引がほぼ空の
+  状態で起動→起動時の整合性チェックが全件の`fts_indexed_at`をNULLに戻し、起動時の拾い直し
+  スレッド(`spawn_initial_search_catchup`、500件ずつ)が全件の再投入を開始、(2)その最中に
+  再構築ボタンが押され、両スレッドが同じTantivy writerへ並行して投入・commitし、
+  `clear`(当時は`delete_all_documents`)も他スレッドの投入途中に走った、(3)約8秒後に
+  ファイル書き込みが止まりCPUもほぼ0のまま進まなくなった。直接の原因は特定できていないが
+  （GUIのリリースビルドはスタックを取れず、この経路はログも出していなかった）、
+  最も整合するのは「writerの作り直し(`recover_writer`)に一度失敗するとスロットが`None`の
+  まま固定され、以後`index_message`が`WriterUnavailable`で即失敗→作り直しはcommit失敗時
+  しか試みないため二度と復帰せず、両スレッドが`with_commit_retry`の待機を延々と繰り返す」
+  という状態。対策: (a) `SearchIndex::begin_rebuild`で再構築中フラグを立て、その間
+  `catch_up_unindexed`は何もしない（2本目の再構築もエラー。GUI側の独自フラグは廃止）、
+  (b) `clear`を`delete_all_documents`（opstampを巻き戻すため並行投入と相性が悪い）から
+  `delete_query(AllQuery)`（通常の削除操作としてopstamp順に効く）に変更、(c) スロットが
+  `None`なら次の書き込み時に作り直しを再試行する`writer_slot`、(d) commit失敗・writer
+  作り直し・再構築の開始/終了/失敗を`ferro.log`に出す。次に同様の停止が起きたら
+  まず`ferro.log`の`search:`/`reindex:`行を見ること。
 - **SQLiteのクエリで`(?1 IS NULL OR col = ?1)`のようなOR分岐を書くと**、インデックスを使った
   範囲検索（SEARCH）ではなくCOVERING SCAN + 一時B-treeソートにフォールバックしやすい。
   新しいクエリを書く際は`EXPLAIN QUERY PLAN`で`SCAN`ではなく`SEARCH`になっているか確認すること。

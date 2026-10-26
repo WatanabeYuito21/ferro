@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -7,6 +7,7 @@ use ferro_core::account_config::{self, AccountConfig};
 use ferro_core::account_setup;
 use ferro_core::color_rules::{self, ColorRule};
 use ferro_core::credentials;
+use ferro_core::logging;
 use ferro_core::db::accounts::Account;
 use ferro_core::db::labels::Label;
 use ferro_core::db::messages::{Folder, Message};
@@ -68,9 +69,6 @@ struct AppState {
     /// バックグラウンド同期は新しいアカウントの同期を始めずに見送る
     /// （`ManualSyncGuard`/`run_background_sync_once`参照）。
     manual_syncs: AtomicUsize,
-    /// 検索インデックスの再構築が実行中か。同時に2本走ると互いの`clear`で
-    /// 索引を消し合うので、2本目は即エラーにする（`reindex_all`参照）。
-    reindex_running: AtomicBool,
 }
 
 /// 手動Syncの実行中だけ`AppState::manual_syncs`を1つ増やすRAIIガード。
@@ -205,15 +203,6 @@ fn attach_labels(conn: &Connection, messages: Vec<Message>) -> Result<Vec<Messag
 struct ReindexProgressEvent {
     processed: usize,
     total: usize,
-}
-
-/// `AppState::reindex_running`を、再構築が終わったら（エラー・panicでも）戻すRAIIガード。
-struct ReindexRunningGuard<'a>(&'a AtomicBool);
-
-impl Drop for ReindexRunningGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
 }
 
 #[derive(Serialize, Clone)]
@@ -871,18 +860,22 @@ fn search_messages(state: State<AppState>, query: String, limit: usize) -> Resul
 async fn reindex_all(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        if state.reindex_running.swap(true, Ordering::SeqCst) {
-            return Err("検索インデックスの再構築は既に実行中です".to_string());
-        }
-        let _running = ReindexRunningGuard(&state.reindex_running);
         let conn = db::open(&paths::db_path()).map_err(|e| e.to_string())?;
-        reindex::reindex_all_with_progress(&conn, &paths::maildir_dir(), &state.search_index, |p| {
-            let _ = app.emit(
-                "reindex-progress",
-                ReindexProgressEvent { processed: p.processed, total: p.total },
-            );
-        })
-        .map_err(|e| e.to_string())
+        // 二重起動の防止と、再構築中の拾い直し（起動時/定期の`catch_up_unindexed`）の
+        // 停止は`reindex_all_with_progress`側（`SearchIndex::begin_rebuild`）が行う。
+        logging::log_line("reindex: started");
+        let result =
+            reindex::reindex_all_with_progress(&conn, &paths::maildir_dir(), &state.search_index, |p| {
+                let _ = app.emit(
+                    "reindex-progress",
+                    ReindexProgressEvent { processed: p.processed, total: p.total },
+                );
+            });
+        match &result {
+            Ok(count) => logging::log_line(&format!("reindex: finished, indexed={count}")),
+            Err(e) => logging::log_line(&format!("reindex: failed: {e}")),
+        }
+        result.map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1260,7 +1253,6 @@ pub fn run() {
             read_conn: Mutex::new(read_conn),
             search_index,
             manual_syncs: AtomicUsize::new(0),
-            reindex_running: AtomicBool::new(false),
         })
         .setup(|app| {
             spawn_background_sync(app.handle().clone());

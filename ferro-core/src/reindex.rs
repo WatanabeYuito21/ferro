@@ -51,6 +51,7 @@ pub fn reindex_all_with_progress(
     index: &SearchIndex,
     mut on_progress: impl FnMut(ReindexProgress),
 ) -> Result<usize, ReindexError> {
+    let _rebuilding = index.begin_rebuild()?;
     let mut total = usize::try_from(messages::count_live(conn)?).unwrap_or(0);
     let mut processed = 0usize;
     on_progress(ReindexProgress { processed, total });
@@ -203,6 +204,11 @@ pub fn catch_up_unindexed(
     after_id: i64,
 ) -> Result<(usize, Option<i64>), ReindexError> {
     const BATCH_SIZE: u32 = 500;
+    // 全件再構築の実行中は何もしない（`SearchIndex::begin_rebuild`参照）。
+    // 「未投入はもう無い」と同じ扱いにするので、呼び出し側のカーソルは先頭に戻る。
+    if index.is_rebuilding() {
+        return Ok((0, None));
+    }
     let page = messages::list_unindexed(conn, after_id, BATCH_SIZE)?;
     if page.is_empty() {
         return Ok((0, None));
@@ -375,6 +381,54 @@ mod tests {
                 ReindexProgress { processed: total, total },
             ]
         );
+    }
+
+    /// 再構築中は拾い直しが何もしない（同じメッセージを並行して投入し合わない）。
+    #[test]
+    fn catch_up_unindexed_does_nothing_while_a_rebuild_is_running() {
+        let conn = open_in_memory().unwrap();
+        let maildir_dir = tempfile::tempdir().unwrap();
+        let index = SearchIndex::create_in_ram().unwrap();
+        let account_id = accounts::insert(
+            &conn,
+            &NewAccount {
+                name: "test",
+                host: "pop.example.com",
+                port: 995,
+                username: "user",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+        let raw = b"Subject: s\r\n\r\nbody";
+        maildir::store(maildir_dir.path(), account_id, "u1", raw).unwrap();
+        db_messages::insert_new(
+            &conn,
+            &NewMessage {
+                account_id,
+                uidl: "u1",
+                message_id_header: None,
+                subject: Some("s"),
+                from_name: None,
+                from_addr: None,
+                to_addr: None,
+                date_header: 1,
+                size_bytes: raw.len() as i64,
+                attachment_count: 0,
+                preview: None,
+            },
+        )
+        .unwrap();
+
+        let rebuilding = index.begin_rebuild().unwrap();
+        assert_eq!(catch_up_unindexed(&conn, maildir_dir.path(), &index, 0).unwrap(), (0, None));
+        assert!(matches!(
+            reindex_all(&conn, maildir_dir.path(), &index),
+            Err(ReindexError::Search(SearchError::RebuildInProgress))
+        ));
+
+        drop(rebuilding);
+        assert_eq!(catch_up_unindexed(&conn, maildir_dir.path(), &index, 0).unwrap().0, 1);
     }
 
     #[test]
