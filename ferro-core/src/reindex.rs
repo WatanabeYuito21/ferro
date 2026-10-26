@@ -130,12 +130,20 @@ fn index_batch_with_fallback(
         Ok(indexed_ids)
     });
 
-    if let Ok(indexed_ids) = whole_batch {
-        update_previews(conn, maildir_base, page)?;
-        return Ok(indexed_ids);
-    }
+    let batch_err = match whole_batch {
+        Ok(indexed_ids) => {
+            update_previews(conn, maildir_base, page)?;
+            return Ok(indexed_ids);
+        }
+        Err(e) => e,
+    };
+    crate::logging::log_line(&format!(
+        "search: batch of {} message(s) failed after retries, indexing one by one: {batch_err}",
+        page.len()
+    ));
 
     let mut indexed_ids = Vec::new();
+    let mut consecutive_failures = 0u32;
     for message in page {
         let Ok(raw) = maildir::load(maildir_base, message.account_id, &message.uidl) else {
             continue;
@@ -158,13 +166,34 @@ fn index_batch_with_fallback(
             index.commit()?;
             Ok(())
         });
-        if result.is_ok() {
-            indexed_ids.push(message.id);
+        match result {
+            Ok(()) => {
+                indexed_ids.push(message.id);
+                consecutive_failures = 0;
+            }
+            // 1件ずつでも連続して失敗するなら、特定のメッセージではなくwriter自体が
+            // 使えない。1件あたり最大約8.4秒のリトライを残り全件に繰り返すと、
+            // 1000件のページで2時間以上何も進まないまま待つことになる
+            // （実際に再構築が0件のまま止まって見えた）ので、ここで諦めて
+            // 呼び出し元へエラーを返す（`ferro.log`にも残る）。
+            Err(e) => {
+                consecutive_failures += 1;
+                if consecutive_failures >= MAX_CONSECUTIVE_FALLBACK_FAILURES {
+                    crate::logging::log_line(&format!(
+                        "search: giving up on this batch after {consecutive_failures} consecutive failures: {e}"
+                    ));
+                    return Err(e.into());
+                }
+            }
         }
     }
     update_previews(conn, maildir_base, page)?;
     Ok(indexed_ids)
 }
+
+/// `index_batch_with_fallback`の1件ずつのフォールバックで、これだけ連続して
+/// 失敗したらバッチ全体を諦める。
+const MAX_CONSECUTIVE_FALLBACK_FAILURES: u32 = 3;
 
 /// `page`の各メッセージについて、Maildirに実体があるものだけ`attachment_count`/
 /// `preview`を再計算してDBへ書き戻す（`index_batch_with_fallback`参照）。
