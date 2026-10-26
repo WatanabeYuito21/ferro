@@ -146,6 +146,7 @@ fn items(app: &App) -> Vec<Item> {
                 Ok(())
             },
         },
+        Item::Toggle { label: "未読数をアイコンに表示", get: |s| s.show_unread_badge, set: |s, v| s.show_unread_badge = v },
         Item::Toggle { label: "閉じたらトレイに常駐", get: |s| s.close_to_tray, set: |s, v| s.close_to_tray = v },
         Item::Header("色分けルール（d:削除）"),
     ];

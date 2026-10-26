@@ -307,6 +307,11 @@
         '組み合わせて使います）。何も選ばなければ全ての新着を通知します。',
       keywords: 'notification label 通知 ラベル 重要 フィルタ',
     },
+    showUnreadBadge: {
+      title: '未読数をアイコンに表示',
+      desc: '受信箱の未読の件数を、トレイアイコンとタスクバーのアイコンに表示します（100件以上は「99+」）。',
+      keywords: 'badge unread count tray taskbar バッジ 未読 件数 アイコン タスクバー',
+    },
     closeToTray: {
       title: '閉じたらトレイに常駐',
       desc:
@@ -360,7 +365,7 @@
     notifications: {
       title: '通知とトレイ',
       keywords: 'notifications tray',
-      rows: ['notifyNewMail', 'notifyLabels', 'closeToTray'],
+      rows: ['notifyNewMail', 'notifyLabels', 'showUnreadBadge', 'closeToTray'],
     },
     update: { title: 'アップデート', keywords: 'update', rows: ['autoUpdateCheck', 'checkUpdate'] },
     diagnostics: { title: '診断', keywords: 'diagnostics', rows: ['logFile'] },
@@ -736,6 +741,24 @@
                 {/each}
               </div>
             {/if}
+          </div>
+        {/if}
+        {#if showRow('showUnreadBadge')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.showUnreadBadge.title}</div>
+              <div class="desc">{R.showUnreadBadge.desc}</div>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              class:on={settings.show_unread_badge}
+              onclick={() => toggle('show_unread_badge')}
+              aria-pressed={settings.show_unread_badge}
+              aria-label={R.showUnreadBadge.title}
+            >
+              <span class="knob"></span>
+            </button>
           </div>
         {/if}
         {#if showRow('closeToTray')}
