@@ -171,7 +171,8 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_detail(f: &mut Frame, app: &App, area: Rect) {
     let active = matches!(app.focus, Pane::Detail) && app.screen == Screen::Messages;
-    let block = Block::default().borders(Borders::ALL).border_style(pane_border_style(active)).title("本文");
+    let title = if app.show_headers { "ヘッダー (H:本文に戻る)" } else { "本文" };
+    let block = Block::default().borders(Borders::ALL).border_style(pane_border_style(active)).title(title);
 
     let Some(detail) = &app.detail else {
         f.render_widget(Paragraph::new("メッセージを選択してください").block(block), area);
@@ -233,7 +234,12 @@ fn render_detail(f: &mut Frame, app: &App, area: Rect) {
 
     lines.push(Line::from(""));
     lines.push(Line::from("―――――――――――――――――――――"));
-    for body_line in detail.body.as_deref().unwrap_or("(本文なし)").lines() {
+    let text = if app.show_headers {
+        detail.headers.as_deref().unwrap_or("(ヘッダーを読めませんでした)")
+    } else {
+        detail.body.as_deref().unwrap_or("(本文なし)")
+    };
+    for body_line in text.lines() {
         lines.push(Line::from(body_line.to_string()));
     }
 
@@ -264,6 +270,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from("a                 アーカイブ切替"),
         Line::from("d                 削除（ゴミ箱へ）/復元"),
         Line::from("z → 1/3/7         スヌーズ（1日後/3日後/1週間後）"),
+        Line::from("H                 本文 / 生のヘッダーの表示切替"),
         Line::from("S                 全アカウントを今すぐ同期"),
         Line::from(",                 設定画面の表示切替（設定はj/kで選んでEnterで変更）"),
         Line::from("q                 終了"),
