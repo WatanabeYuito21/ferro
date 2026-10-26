@@ -72,6 +72,8 @@ pub struct Settings {
     /// GUIのウィンドウを閉じても終了せず、システムトレイに常駐して同期を続けるか（既定はオフ）。
     /// 終了はトレイアイコンのメニューから。
     pub close_to_tray: bool,
+    /// GUIのトレイアイコンとタスクバーに受信箱の未読数を出すか（既定はオン）。
+    pub show_unread_badge: bool,
 }
 
 impl Default for Settings {
@@ -91,6 +93,7 @@ impl Default for Settings {
             notify_new_mail: true,
             notify_labels: Vec::new(),
             close_to_tray: false,
+            show_unread_badge: true,
         }
     }
 }
@@ -261,6 +264,7 @@ mod tests {
             notify_new_mail: false,
             notify_labels: vec!["重要".to_string(), "alert".to_string()],
             close_to_tray: true,
+            show_unread_badge: false,
         };
         save(&path, &custom).unwrap();
         assert_eq!(load(&path).unwrap(), custom);

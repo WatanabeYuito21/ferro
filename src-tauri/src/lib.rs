@@ -1,3 +1,5 @@
+mod badge;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -26,6 +28,7 @@ use ferro_core::{maildir, paths, reindex, settings, sync};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::image::Image;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 
@@ -707,6 +710,7 @@ struct SettingsView {
     notify_new_mail: bool,
     notify_labels: Vec<String>,
     close_to_tray: bool,
+    show_unread_badge: bool,
 }
 
 impl From<Settings> for SettingsView {
@@ -726,6 +730,7 @@ impl From<Settings> for SettingsView {
             notify_new_mail: s.notify_new_mail,
             notify_labels: s.notify_labels,
             close_to_tray: s.close_to_tray,
+            show_unread_badge: s.show_unread_badge,
         }
     }
 }
@@ -747,6 +752,7 @@ impl From<SettingsView> for Settings {
             notify_new_mail: s.notify_new_mail,
             notify_labels: s.notify_labels,
             close_to_tray: s.close_to_tray,
+            show_unread_badge: s.show_unread_badge,
         }
     }
 }
@@ -759,13 +765,63 @@ fn get_settings() -> Result<SettingsView, String> {
 }
 
 #[tauri::command]
-async fn update_settings(settings: SettingsView) -> Result<(), String> {
+async fn update_settings(app: AppHandle, settings: SettingsView) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        ferro_core::settings::save(&paths::settings_config_path(), &settings.into())
-            .map_err(|e| e.to_string())
+        ferro_core::settings::save(&paths::settings_config_path(), &settings.into()).map_err(|e| e.to_string())?;
+        // 「未読数を表示」の切り替えをすぐ反映する。
+        update_unread_badge(&app);
+        Ok(())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// 受信箱の未読数を、トレイアイコン（右下のバッジとツールチップ）とタスクバー（Windowsは
+/// オーバーレイアイコン、それ以外はバッジ）に出す。`show_unread_badge`がオフなら消す。
+/// フロントが一覧の件数を取り直すたび（`refresh_unread_badge`）と、バックグラウンド同期の後に呼ぶ。
+fn update_unread_badge(app_handle: &AppHandle) {
+    let enabled = settings::load_or_default(&paths::settings_config_path()).show_unread_badge;
+    let count = if enabled {
+        let state = app_handle.state::<AppState>();
+        let Ok(conn) = state.read_conn.lock() else {
+            return;
+        };
+        db::messages::count_unread_inbox(&conn, now_unix()).unwrap_or(0).max(0) as u64
+    } else {
+        0
+    };
+
+    if let Some(tray) = app_handle.tray_by_id(TRAY_ID) {
+        if let Some(base) = app_handle.default_window_icon() {
+            let icon = if count > 0 {
+                let mut rgba = base.rgba().to_vec();
+                badge::draw_on(&mut rgba, base.width(), base.height(), count);
+                Image::new_owned(rgba, base.width(), base.height())
+            } else {
+                base.clone().to_owned()
+            };
+            let _ = tray.set_icon(Some(icon));
+        }
+        let tooltip = if count > 0 { format!("Ferro — 受信箱の未読 {count}件") } else { "Ferro".to_string() };
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
+    if let Some(window) = app_handle.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        let _ = window.set_overlay_icon(
+            (count > 0).then(|| Image::new_owned(badge::standalone(count, BADGE_OVERLAY_SIZE), BADGE_OVERLAY_SIZE, BADGE_OVERLAY_SIZE)),
+        );
+        #[cfg(not(target_os = "windows"))]
+        let _ = window.set_badge_count((count > 0).then_some(count as i64));
+    }
+}
+
+/// タスクバーのオーバーレイアイコンの大きさ（OSが16×16に縮めて表示する）。
+#[cfg(target_os = "windows")]
+const BADGE_OVERLAY_SIZE: u32 = 32;
+
+#[tauri::command(async)]
+fn refresh_unread_badge(app: AppHandle) {
+    update_unread_badge(&app);
 }
 
 /// アカウントを追加する: `accounts.toml`にエントリを追記してからDBに反映し、
@@ -1501,6 +1557,7 @@ fn run_background_sync_once(app_handle: &AppHandle) {
         let _ = app_handle.emit("background-sync", event);
     }
     notify_new_mail(app_handle, latest_id);
+    update_unread_badge(app_handle);
     // sync中にTantivyのIndexWriterクラッシュ(`with_commit_retry`のドキュメント参照)で
     // 検索インデックスへの投入が漏れたメッセージの拾い直しは、呼び出し元
     // (`spawn_background_sync`)がサイクルのたびに`step_search_catchup`で行う。
@@ -1556,12 +1613,14 @@ const TRAY_QUIT_ID: &str = "tray-quit";
 /// システムトレイのアイコン。左クリックでウィンドウを表示し、右クリックのメニューから
 /// 「今すぐ同期」「終了」もできる。`close_to_tray`がオンのときはウィンドウを閉じても
 /// 終了せずここに残る（`run`の`on_window_event`参照）ので、終了はこのメニューから行う。
+const TRAY_ID: &str = "main";
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show = MenuItemBuilder::with_id(TRAY_SHOW_ID, "Ferroを開く").build(app)?;
     let sync = MenuItemBuilder::with_id(TRAY_SYNC_ID, "今すぐ同期").build(app)?;
     let quit = MenuItemBuilder::with_id(TRAY_QUIT_ID, "終了").build(app)?;
     let menu = MenuBuilder::new(app).item(&show).item(&sync).separator().item(&quit).build()?;
-    let mut tray = TrayIconBuilder::with_id("main")
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Ferro")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -1667,6 +1726,8 @@ pub fn run() {
             spawn_retention_cleanup(app.handle().clone());
             spawn_thread_backfill();
             build_tray(app)?;
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || update_unread_badge(&app_handle));
 
             let messages_item = MenuItemBuilder::with_id(NAV_MESSAGES_ID, "Messages").build(app)?;
             let settings_item = MenuItemBuilder::with_id(NAV_SETTINGS_ID, "Settings…").build(app)?;
@@ -1724,6 +1785,7 @@ pub fn run() {
             save_message_eml,
             get_message_source,
             list_saved_searches,
+            refresh_unread_badge,
             highlight_terms,
             add_saved_search,
             remove_saved_search,

@@ -530,6 +530,18 @@ pub fn folder_counts(
     Ok(counts)
 }
 
+/// 受信箱の未読数（GUIのトレイアイコン・タスクバーのバッジ用）。受信箱の条件は
+/// `append_folder_condition`の`Folder::Inbox`と同じ（変えるときは両方を揃える）だが、
+/// `idx_messages_unread_inbox`（migration 0013）だけで数えられるよう条件をリテラルで書く。
+pub fn count_unread_inbox(conn: &Connection, now: i64) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages
+         WHERE is_read = 0 AND is_deleted = 0 AND is_archived = 0 AND (snoozed_until IS NULL OR snoozed_until <= ?1)",
+        params![now],
+        |row| row.get(0),
+    )
+}
+
 fn build_folder_count_query(
     folder: Folder,
     account_id: Option<i64>,
@@ -1162,6 +1174,20 @@ mod tests {
         assert_eq!(counts.archive, 1);
         assert_eq!(counts.snoozed, 1);
         assert_eq!(counts.trash, 1);
-        let _ = inbox;
+
+        // 未読数は受信箱の2件（inbox・starred）のうち未読のもの。スヌーズが明けたら数える。
+        assert_eq!(count_unread_inbox(&conn, now).unwrap(), 2);
+        set_read(&conn, inbox, true).unwrap();
+        assert_eq!(count_unread_inbox(&conn, now).unwrap(), 1);
+        assert_eq!(count_unread_inbox(&conn, 20_000).unwrap(), 2);
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM messages
+                 WHERE is_read = 0 AND is_deleted = 0 AND is_archived = 0 AND (snoozed_until IS NULL OR snoozed_until <= ?1)",
+                [now],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_messages_unread_inbox"), "{plan}");
     }
 }
