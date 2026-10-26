@@ -333,6 +333,19 @@ impl App {
                     });
                     let _ = self.refresh_all();
                 }
+                BackgroundEvent::OptimizeFinished { result } => {
+                    self.status = Some(match result {
+                        Ok(report) => format!(
+                            "最適化しました: {:.1}MB空きました（DB {:.1}→{:.1}MB、索引 {:.1}→{:.1}MB）",
+                            report.freed() as f64 / 1_048_576.0,
+                            report.db_before as f64 / 1_048_576.0,
+                            report.db_after as f64 / 1_048_576.0,
+                            report.index_before as f64 / 1_048_576.0,
+                            report.index_after as f64 / 1_048_576.0,
+                        ),
+                        Err(e) => format!("最適化に失敗しました: {e}"),
+                    });
+                }
                 BackgroundEvent::ReindexFinished { result } => {
                     self.status = Some(match result {
                         Ok(count) => format!("{count}件を再構築しました"),
@@ -463,6 +476,27 @@ impl App {
         std::thread::spawn(move || {
             let result = background::reindex_all_now(&write_conn, &search_index);
             let _ = tx.send(BackgroundEvent::ReindexFinished { result });
+        });
+    }
+
+    /// 設定画面の「ディスクを最適化」相当（`maintenance::optimize`）。
+    pub fn run_optimize_now(&mut self) {
+        self.status = Some("最適化中…".to_string());
+        let write_conn = Arc::clone(&self.write_conn);
+        let search_index = Arc::clone(&self.search_index);
+        let tx = self.bg_tx.clone();
+        std::thread::spawn(move || {
+            let result = match write_conn.lock() {
+                Ok(conn) => ferro_core::maintenance::optimize(
+                    &conn,
+                    &paths::db_path(),
+                    &search_index,
+                    &paths::search_index_dir(),
+                )
+                .map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let _ = tx.send(BackgroundEvent::OptimizeFinished { result });
         });
     }
 

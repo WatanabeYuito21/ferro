@@ -10,6 +10,7 @@ pub mod dedupe;
 pub mod label_rules;
 pub mod logging;
 pub mod mail;
+pub mod maintenance;
 pub mod maildir;
 pub mod message_actions;
 pub mod message_filter;
