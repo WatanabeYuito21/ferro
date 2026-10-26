@@ -69,6 +69,10 @@ fn main() -> anyhow::Result<()> {
 
     let (tx, rx) = mpsc::channel();
     background::spawn(Arc::clone(&write_conn), Arc::clone(&search_index), tx.clone());
+    // v0.0.39までの1通1ファイルの保存を、生メールの保存先DBへ移す（GUIと同じ。`maildir`参照）。
+    std::thread::spawn(|| {
+        let _ = ferro_core::maildir::migrate_all_files(&ferro_core::paths::maildir_dir());
+    });
 
     let mut app = App::new(read_conn, write_conn, search_index, rx, tx)?;
 

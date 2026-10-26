@@ -1018,6 +1018,8 @@ fn highlight_terms(query: String) -> Vec<HighlightTermView> {
 struct OptimizeReportView {
     db_before: u64,
     db_after: u64,
+    mail_before: u64,
+    mail_after: u64,
     index_before: u64,
     index_after: u64,
     freed: u64,
@@ -1033,6 +1035,7 @@ async fn optimize_storage(app: AppHandle) -> Result<OptimizeReportView, String> 
         let report = ferro_core::maintenance::optimize(
             &conn,
             &paths::db_path(),
+            &paths::maildir_dir(),
             &state.search_index,
             &paths::search_index_dir(),
         )
@@ -1040,6 +1043,8 @@ async fn optimize_storage(app: AppHandle) -> Result<OptimizeReportView, String> 
         Ok(OptimizeReportView {
             db_before: report.db_before,
             db_after: report.db_after,
+            mail_before: report.mail_before,
+            mail_after: report.mail_after,
             index_before: report.index_before,
             index_after: report.index_after,
             freed: report.freed(),
@@ -1434,6 +1439,15 @@ fn spawn_initial_search_catchup(app_handle: AppHandle) {
 ///
 /// `reindex_all`と同じ理由で`write_conn`は借りず専用の接続で動かす（Maildirを読み直す
 /// ため1バッチ数秒かかりうるので、その間同期や既読化を待たせない）。
+/// v0.0.39までの1通1ファイルの保存を、生メールの保存先DB（`maildir`の`messages.db`）へ移す
+/// （`maildir::migrate_all_files`）。移し終わるまでも読み込みはファイルから行えるので、
+/// 何もしない起動と同じように使える。
+fn spawn_storage_migration() {
+    std::thread::spawn(|| {
+        let _ = ferro_core::maildir::migrate_all_files(&paths::maildir_dir());
+    });
+}
+
 fn spawn_thread_backfill() {
     std::thread::spawn(|| {
         let Ok(conn) = db::open(&paths::db_path()) else {
@@ -1760,6 +1774,7 @@ pub fn run() {
             spawn_initial_search_catchup(app.handle().clone());
             spawn_retention_cleanup(app.handle().clone());
             spawn_thread_backfill();
+            spawn_storage_migration();
             build_tray(app)?;
             let app_handle = app.handle().clone();
             std::thread::spawn(move || update_unread_badge(&app_handle));
