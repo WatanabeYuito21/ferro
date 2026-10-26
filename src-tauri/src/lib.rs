@@ -373,21 +373,59 @@ async fn set_archived(app: AppHandle, message_id: i64, is_archived: bool) -> Res
     .map_err(|e| e.to_string())?
 }
 
-/// `preset`は"1d"/"3d"/"1w"のいずれか。Noneを渡すとスヌーズ解除（受信箱へ即座に戻す）。
+/// スヌーズのプリセット（"1d"/"3d"/"1w"）から期限のUnix時刻を求める。Noneは解除。
 /// 期限の時刻計算はここ(Rust側)で行い、フロントはUnix時刻を扱わない。
+fn snooze_until(preset: Option<&str>) -> Result<Option<i64>, String> {
+    match preset {
+        None => Ok(None),
+        Some("1d") => Ok(Some(now_unix() + 24 * 60 * 60)),
+        Some("3d") => Ok(Some(now_unix() + 3 * 24 * 60 * 60)),
+        Some("1w") => Ok(Some(now_unix() + 7 * 24 * 60 * 60)),
+        Some(other) => Err(format!("unknown snooze preset: {other}")),
+    }
+}
+
+/// `preset`は"1d"/"3d"/"1w"のいずれか。Noneを渡すとスヌーズ解除（受信箱へ即座に戻す）。
 #[tauri::command]
 async fn set_snoozed(app: AppHandle, message_id: i64, preset: Option<String>) -> Result<(), String> {
-    let until = match preset.as_deref() {
-        None => None,
-        Some("1d") => Some(now_unix() + 24 * 60 * 60),
-        Some("3d") => Some(now_unix() + 3 * 24 * 60 * 60),
-        Some("1w") => Some(now_unix() + 7 * 24 * 60 * 60),
-        Some(other) => return Err(format!("unknown snooze preset: {other}")),
-    };
+    let until = snooze_until(preset.as_deref())?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
         db::messages::set_snoozed(&conn, message_id, until).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 一括操作の種類（フロントからは`{ kind: "read", value: true }`のような形で渡す）。
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum BulkActionInput {
+    Read { value: bool },
+    Flag { value: bool },
+    Archive { value: bool },
+    Snooze { preset: Option<String> },
+    Delete,
+    Label { label_id: i64, assigned: bool },
+}
+
+/// 複数選択したメッセージへの一括操作（`message_actions::apply_bulk`参照）。
+#[tauri::command]
+async fn bulk_update(app: AppHandle, message_ids: Vec<i64>, action: BulkActionInput) -> Result<(), String> {
+    use ferro_core::message_actions::{apply_bulk, BulkAction};
+    let action = match action {
+        BulkActionInput::Read { value } => BulkAction::SetRead(value),
+        BulkActionInput::Flag { value } => BulkAction::SetFlagged(value),
+        BulkActionInput::Archive { value } => BulkAction::SetArchived(value),
+        BulkActionInput::Snooze { preset } => BulkAction::Snooze(snooze_until(preset.as_deref())?),
+        BulkActionInput::Delete => BulkAction::Delete,
+        BulkActionInput::Label { label_id, assigned } => BulkAction::SetLabel { label_id, assigned },
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        apply_bulk(&conn, &state.search_index, &message_ids, action).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1347,6 +1385,7 @@ pub fn run() {
             set_deleted,
             set_archived,
             set_snoozed,
+            bulk_update,
             get_folder_counts,
             list_labels,
             create_label,
