@@ -261,6 +261,11 @@ pub fn mark_indexed(conn: &Connection, ids: &[i64]) -> rusqlite::Result<()> {
 /// (`is_deleted=0`のみ)。起動時に`SearchIndex::num_docs`と突き合わせて
 /// 不整合（インデックスの中身が消えているのにこの件数だけ残っている）を
 /// 検知するために使う（`reset_all_fts_indexed`のドキュメント参照）。
+/// 論理削除されていないメッセージの総数（`reindex_all`の進捗表示の分母）。
+pub fn count_live(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM messages WHERE is_deleted = 0", [], |row| row.get(0))
+}
+
 pub fn count_indexed(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row(
         "SELECT COUNT(*) FROM messages WHERE fts_indexed_at IS NOT NULL AND is_deleted = 0",

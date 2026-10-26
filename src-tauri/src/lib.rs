@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -68,6 +68,9 @@ struct AppState {
     /// バックグラウンド同期は新しいアカウントの同期を始めずに見送る
     /// （`ManualSyncGuard`/`run_background_sync_once`参照）。
     manual_syncs: AtomicUsize,
+    /// 検索インデックスの再構築が実行中か。同時に2本走ると互いの`clear`で
+    /// 索引を消し合うので、2本目は即エラーにする（`reindex_all`参照）。
+    reindex_running: AtomicBool,
 }
 
 /// 手動Syncの実行中だけ`AppState::manual_syncs`を1つ増やすRAIIガード。
@@ -196,6 +199,23 @@ fn attach_labels(conn: &Connection, messages: Vec<Message>) -> Result<Vec<Messag
 }
 
 /// Sync進捗（"30/1000"のような表示用）。1バッチ完了するごとに発火する。
+/// 検索インデックス再構築の進捗（`reindex::ReindexProgress`）。開始直後と、
+/// 1000件のページを処理するたびに発火する。
+#[derive(Serialize, Clone)]
+struct ReindexProgressEvent {
+    processed: usize,
+    total: usize,
+}
+
+/// `AppState::reindex_running`を、再構築が終わったら（エラー・panicでも）戻すRAIIガード。
+struct ReindexRunningGuard<'a>(&'a AtomicBool);
+
+impl Drop for ReindexRunningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct SyncProgressEvent {
     account_id: i64,
@@ -851,8 +871,18 @@ fn search_messages(state: State<AppState>, query: String, limit: usize) -> Resul
 async fn reindex_all(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        if state.reindex_running.swap(true, Ordering::SeqCst) {
+            return Err("検索インデックスの再構築は既に実行中です".to_string());
+        }
+        let _running = ReindexRunningGuard(&state.reindex_running);
         let conn = db::open(&paths::db_path()).map_err(|e| e.to_string())?;
-        reindex::reindex_all(&conn, &paths::maildir_dir(), &state.search_index).map_err(|e| e.to_string())
+        reindex::reindex_all_with_progress(&conn, &paths::maildir_dir(), &state.search_index, |p| {
+            let _ = app.emit(
+                "reindex-progress",
+                ReindexProgressEvent { processed: p.processed, total: p.total },
+            );
+        })
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1230,6 +1260,7 @@ pub fn run() {
             read_conn: Mutex::new(read_conn),
             search_index,
             manual_syncs: AtomicUsize::new(0),
+            reindex_running: AtomicBool::new(false),
         })
         .setup(|app| {
             spawn_background_sync(app.handle().clone());
