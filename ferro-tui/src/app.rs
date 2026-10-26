@@ -450,8 +450,9 @@ impl App {
             self.search_results = None;
             return Ok(());
         }
-        let ids = self.search_index.search(&query, 200)?;
         let conn = self.read_conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        // 詳細検索の書式（`from:`等）も使える。日付はCLIと同じくUTCの0時で区切る。
+        let ids = ferro_core::message_search::search_query(&conn, &self.search_index, &query, 0, 200)?;
         let mut results = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(m) = messages::get(&conn, id)? {

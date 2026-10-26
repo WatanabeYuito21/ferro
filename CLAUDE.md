@@ -254,6 +254,22 @@
   `bulk_update`の`action`はserdeの内部タグ付きenum（`{ kind: "label", label_id, assigned }`）で、
   Tauriはコマンド引数のトップレベルしかcamelCase→snake_caseに変換しないので、中のフィールドは
   フロント側でもsnake_caseで書く。
+- **詳細検索**（v0.0.29）: 検索欄の文字列を`ferro_core::search::query::parse`が全文検索の語
+  （`TextTerm`。フィールド指定・否定付き）と絞り込み条件（日付・添付・既読・スター・フォルダ・
+  ラベル）に分解し、`message_search::search`が実行する。全文検索の語と日付はTantivy
+  （`SearchIndex::search_terms`。日付は`date_header`のFASTフィールドへの`RangeQuery`）、
+  それ以外はSQLite（`filter_in_db`）。添付・既読等を索引に持たせなかったのは、既読にする
+  たびに索引を書き換えることになるため。両方ある場合は索引から新しい順に`CANDIDATE_LIMIT`
+  （5000）件取ってSQLで絞るので、語の一致が非常に多く条件に合うものが古い方にしか無いと
+  取りこぼす（日付は索引側で絞れるので、期間指定で回避できる。README参照）。語が無ければ
+  SQLiteだけで探す。その場合に該当の少ない条件（`has:attachment`等）で`date_header`順の
+  インデックスを末尾まで舐めないよう、migration 0009で部分インデックスを足し、
+  フラグの条件は`?`ではなくリテラルで書いている（SQLiteは部分インデックスの条件を
+  バインド変数から推論しない）。解釈できない`キー:値`は普通の検索語に戻す（入力が黙って
+  捨てられないように）。`after:`/`before:`の日付はGUIでは利用者のタイムゾーン
+  （`search_messages`の`utc_offset_seconds`）、CLI/TUIはUTCの0時で区切る（chrono等を
+  足さずにローカルのオフセットを得る手段が無いため）。GUIの「詳細」フォーム
+  （`AdvancedSearch.svelte`）は書式の文字列を組み立てて検索欄に入れるだけで、検索の経路は同じ。
 - **.eml書き出し**（`ferro_core::mail::export`、v0.0.26）: Maildirのファイル自体が既に
   RFC 5322の生メールなので、変換はせずバイト列をそのまま書き出す。GUIは本文表示の
   「.emlとして保存…」（`save_message_eml`コマンド＋`tauri-plugin-dialog`の保存ダイアログ）、
