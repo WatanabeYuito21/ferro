@@ -526,6 +526,7 @@ struct SettingsView {
     font_size: String,
     retention_days: i64,
     server_delete_days: i64,
+    auto_update_check: bool,
 }
 
 impl From<Settings> for SettingsView {
@@ -541,6 +542,7 @@ impl From<Settings> for SettingsView {
             font_size: s.font_size,
             retention_days: s.retention_days,
             server_delete_days: s.server_delete_days,
+            auto_update_check: s.auto_update_check,
         }
     }
 }
@@ -558,6 +560,7 @@ impl From<SettingsView> for Settings {
             font_size: s.font_size,
             retention_days: s.retention_days,
             server_delete_days: s.server_delete_days,
+            auto_update_check: s.auto_update_check,
         }
     }
 }
