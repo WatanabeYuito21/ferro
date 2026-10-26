@@ -269,6 +269,22 @@ GitHub Actions（`.github/workflows/release.yml`）が同じバージョンの�
 バージョンを上げる際は`Cargo.toml`・`src-tauri/tauri.conf.json`・`frontend/package.json`の3か所を揃えます
 （インストーラー名は`tauri.conf.json`の値で決まるため、ずれているとワークフローがエラーで止まります）。
 
+### 自動アップデート（GUI版）
+
+設定画面の「アップデート」→「更新を確認」で、最新のGitHub Releaseの`latest.json`を見て、
+新しいバージョンがあれば署名を検証した上でダウンロード・インストールし、Ferroを再起動します
+（Tauri公式の`tauri-plugin-updater`。Windows: NSIS、Linux: AppImageが対象で、MSI/debは対象外）。
+起動時の自動確認はせず、ボタンを押したときだけ動きます。CLI/TUIは対象外です。
+
+更新の署名には専用の鍵ペアを使います（インストーラーのコード署名とは別物）。
+
+1. `cargo tauri signer generate -w $HOME/.tauri/ferro.key`で鍵を作る（PowerShellでは`~`が展開されずカレントに`~`フォルダができるので`$HOME`を使う）
+2. 公開鍵を`src-tauri/tauri.conf.json`の`plugins.updater.pubkey`に貼る
+3. 秘密鍵の中身を、GitHubリポジトリのSecrets `TAURI_SIGNING_PRIVATE_KEY`に登録する
+   （パスワードを付けたなら`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`も）
+
+秘密鍵を失うと、既存ユーザーへ更新を配れなくなります。
+
 最新版は[Releasesページ](https://github.com/WatanabeYuito21/ferro/releases/latest)からダウンロードできます。`v0.0.1`が最初のリリースです。
 
 ## 既知の制限

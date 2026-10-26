@@ -280,6 +280,17 @@
   残す行は最小idで、削除する行の既読/スター/ラベルを引き継ぐ。
   ※ GUI等がTantivyインデックスを開いている間はCLIは起動できない
   （上記ロックの項参照）ため、`ferro dedupe`はGUI/TUIを閉じてから実行する。
+- **自動アップデート**（v0.0.17、GUIのみ）: `tauri-plugin-updater`＋`tauri-plugin-process`
+  （再起動用）。設定画面の「更新を確認」ボタンを押したときだけ`check()`→
+  `downloadAndInstall()`→`relaunch()`を行う（起動時の自動確認はしない）。更新元は
+  `https://github.com/WatanabeYuito21/ferro/releases/latest/download/latest.json`
+  （publicリポジトリなので認証不要）。`release.yml`のreleaseジョブが各プラットフォームの
+  `.sig`（`createUpdaterArtifacts: true`でビルド時に生成）から`latest.json`を`jq`で組み立てて
+  Releaseに添付する。対象はWindows NSIS(`*setup.exe`)とLinux AppImageのみ。
+  **ビルドにはGitHub Secretsの`TAURI_SIGNING_PRIVATE_KEY`が必須**（未設定だと`cargo tauri build`が
+  失敗する）。`tauri.conf.json`の`plugins.updater.pubkey`は鍵生成後に実際の公開鍵へ
+  差し替えること（公開鍵は設定済み）。
+  秘密鍵を失うと既存インストールへ更新を配れなくなる。
 - **リリース自動化**（`.github/workflows/release.yml`）: `main`へのpush毎に起動するが、
   実際にビルド・GitHub Releaseを作るのはルート`Cargo.toml`の`workspace.package.version`
   に対応するタグ（`vX.Y.Z`）がまだ`origin`に存在しない場合のみ（`git ls-remote --tags origin`で
