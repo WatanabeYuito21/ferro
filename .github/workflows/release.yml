@@ -28,7 +28,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           # インストーラー名はtauri.conf.jsonのversionから付くため、Cargo.tomlと
           # ずれたまま公開すると別バージョン名のAssetsになる(v0.0.13で実際に発生)。
-          TAURI_VERSION=$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version": *"([^"]*)".*//')
+          TAURI_VERSION=$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version": *"([^"]*)".*/\1/')
           if [ "$TAURI_VERSION" != "$VERSION" ]; then
             echo "::error::src-tauri/tauri.conf.json version ($TAURI_VERSION) != Cargo.toml version ($VERSION)"
             exit 1
