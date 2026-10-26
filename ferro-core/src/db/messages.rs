@@ -163,6 +163,36 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Message>> {
     .optional()
 }
 
+/// 一覧の各行に出す「スレッドの件数」用。`ids`それぞれの(`thread_id`, スレッド内の
+/// 削除されていない件数)を返す。スレッド未判定（`thread_id`がNULL）の行は含めない。
+pub fn thread_info(
+    conn: &Connection,
+    ids: &[i64],
+) -> rusqlite::Result<std::collections::HashMap<i64, (i64, i64)>> {
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let sql = format!(
+        "SELECT m.id, m.thread_id, \
+                (SELECT COUNT(*) FROM messages t WHERE t.thread_id = m.thread_id AND t.is_deleted = 0) \
+         FROM messages m WHERE m.id IN ({placeholders}) AND m.thread_id IS NOT NULL"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn ToSql> = ids.iter().map(|id| id as &dyn ToSql).collect();
+    stmt.query_map(params.as_slice(), |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))?
+        .collect()
+}
+
+/// スレッドのメッセージを古い順に（削除済みを除き、最大`limit`件）。
+pub fn list_thread(conn: &Connection, thread_id: i64, limit: u32) -> rusqlite::Result<Vec<Message>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages WHERE thread_id = ?1 AND is_deleted = 0 \
+         ORDER BY date_header, id LIMIT ?2"
+    ))?;
+    stmt.query_map(params![thread_id, limit], row_to_message)?.collect()
+}
+
 /// アカウント削除時、Maildir/検索インデックスのクリーンアップに使うため
 /// そのアカウントの全メッセージ（`is_deleted`に関わらず）を一覧する。
 pub fn list_all_for_account(conn: &Connection, account_id: i64) -> rusqlite::Result<Vec<Message>> {
