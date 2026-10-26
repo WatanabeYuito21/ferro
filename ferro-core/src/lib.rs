@@ -14,6 +14,7 @@ pub mod maildir;
 pub mod message_actions;
 pub mod message_filter;
 pub mod message_search;
+pub mod new_mail;
 pub mod paths;
 pub mod pop3;
 pub mod reindex;

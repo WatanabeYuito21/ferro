@@ -287,6 +287,18 @@
   またいだスレッドや、畳んだ行への一括操作・キーボード操作の意味が曖昧になるため）。
   なお開発者の実データ（主にアラートメール）には返信を含むメールが無く、2件以上の
   スレッドは0件だった。
+- **新着通知とシステムトレイ**（v0.0.31、GUIのみ）: `tauri-plugin-notification`と
+  Tauri本体の`tray-icon`フィーチャ。`run_background_sync_once`が同期前に
+  `new_mail::latest_id`（最大id）を覚え、全アカウントの同期後に`new_mail::since`で
+  それより後の新着を数えて1回だけ通知する（`SyncSummary`は件数しか持たず件名が分からない
+  ため）。`Settings::notify_labels`が空でなければ、そのどれかのラベルが付いた新着だけ
+  （受信時の自動ラベル付けルールで付く）。ウィンドウが表示中かつフォーカスがある間は
+  通知しない（画面上の新着バナーで足りる）。手動Syncでは通知しない（自分で押しているため）。
+  トレイは左クリックで表示、メニューに「Ferroを開く/今すぐ同期/終了」。
+  `Settings::close_to_tray`がオンなら`on_window_event`の`CloseRequested`で閉じずに隠す
+  （閉じる時点で設定を読み直す）。手動Syncとの競合回避（`manual_syncs`）で同期を
+  打ち切った場合も、それまでに受信した分は通知する（以前は`return`で抜けていたのを`break`に変えた）。
+  Linuxのトレイは`libayatana-appindicator3`が要る（CIでは導入済み）。
 - **.eml書き出し**（`ferro_core::mail::export`、v0.0.26）: Maildirのファイル自体が既に
   RFC 5322の生メールなので、変換はせずバイト列をそのまま書き出す。GUIは本文表示の
   「.emlとして保存…」（`save_message_eml`コマンド＋`tauri-plugin-dialog`の保存ダイアログ）、
