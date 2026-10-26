@@ -18,6 +18,9 @@
   let accounts = []
   let error = ''
   let syncStatus = {}
+  // 手動Sync実行中のアカウントid。この間は自動同期由来のイベント
+  // (background-sync)で手動Syncの表示を上書きしない。
+  let manualSyncing = new Set()
   // MessageListの`{#key}`に渡し、値が変わるたびにコンポーネントを
   // 作り直させることで、最初のページから読み直させる（スクロール位置は失われる）。
   let messageListRefreshToken = 0
@@ -214,6 +217,7 @@
     // 手動Syncボタンと同じステータス表示に反映する。
     unlistenBackgroundSync = await listen('background-sync', (event) => {
       const { account_id, fetched, remaining, ended_early, error: syncError } = event.payload
+      if (manualSyncing.has(account_id)) return
       if (syncError) {
         syncStatus = { ...syncStatus, [account_id]: `background sync error: ${syncError}` }
         return
@@ -291,6 +295,7 @@
 
   async function syncAccount(accountId) {
     syncStatus = { ...syncStatus, [accountId]: 'syncing…' }
+    manualSyncing.add(accountId)
     try {
       // アカウント作成時にuse_tls=falseを明示選択済みのアカウントは、
       // それ自体が平文接続へのopt-inとみなす（CLIの`--allow-plaintext`に相当）。
@@ -310,6 +315,8 @@
       refreshFolderCounts()
     } catch (e) {
       syncStatus = { ...syncStatus, [accountId]: `error: ${e}` }
+    } finally {
+      manualSyncing.delete(accountId)
     }
   }
 
