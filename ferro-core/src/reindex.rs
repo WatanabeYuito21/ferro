@@ -28,6 +28,33 @@ pub fn reindex_all(
     maildir_base: &Path,
     index: &SearchIndex,
 ) -> Result<usize, ReindexError> {
+    reindex_all_with_progress(conn, maildir_base, index, |_| {})
+}
+
+/// `reindex_all_with_progress`が呼び出し元へ渡す進捗。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReindexProgress {
+    /// ここまでに処理した（投入を試みた）メッセージ数。Maildirに実体が無く
+    /// スキップしたものも含む（＝最終的な戻り値の「投入できた件数」とは一致しない）。
+    pub processed: usize,
+    /// 開始時点の全件数（論理削除済みを除く）。再構築中にsyncで新着が増えると
+    /// `processed`がこれを超えうるので、その場合は`processed`に合わせて引き上げる
+    /// （表示側で100%を超えないように）。
+    pub total: usize,
+}
+
+/// `reindex_all`に進捗通知を足したもの。`on_progress`は開始直後（`processed = 0`）と、
+/// 以後`PAGE_SIZE`件のページを処理するたびに呼ばれる。
+pub fn reindex_all_with_progress(
+    conn: &Connection,
+    maildir_base: &Path,
+    index: &SearchIndex,
+    mut on_progress: impl FnMut(ReindexProgress),
+) -> Result<usize, ReindexError> {
+    let mut total = usize::try_from(messages::count_live(conn)?).unwrap_or(0);
+    let mut processed = 0usize;
+    on_progress(ReindexProgress { processed, total });
+
     with_commit_retry(|| index.clear())?;
 
     let mut count = 0usize;
@@ -42,6 +69,10 @@ pub fn reindex_all(
         let indexed_ids = index_batch_with_fallback(conn, index, maildir_base, &page)?;
         messages::mark_indexed(conn, &indexed_ids)?;
         count += indexed_ids.len();
+
+        processed += page.len();
+        total = total.max(processed);
+        on_progress(ReindexProgress { processed, total });
     }
 
     Ok(count)
@@ -286,6 +317,63 @@ mod tests {
             refreshed.preview.as_deref().unwrap().contains("CRITICAL"),
             "expected the refreshed preview to include the full body, got: {:?}",
             refreshed.preview
+        );
+    }
+
+    #[test]
+    fn reindex_all_with_progress_reports_start_and_each_page() {
+        let conn = open_in_memory().unwrap();
+        let maildir_dir = tempfile::tempdir().unwrap();
+        let index = SearchIndex::create_in_ram().unwrap();
+        let account_id = accounts::insert(
+            &conn,
+            &NewAccount {
+                name: "test",
+                host: "pop.example.com",
+                port: 995,
+                username: "user",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+
+        // 2ページ目の途中で終わる件数にして、ページごとの通知と最後の端数を両方確かめる。
+        let total = PAGE_SIZE as usize + 5;
+        let raw = b"Subject: s\r\nFrom: a@example.com\r\n\r\nbody";
+        for i in 0..total {
+            let uidl = format!("u{i}");
+            maildir::store(maildir_dir.path(), account_id, &uidl, raw).unwrap();
+            db_messages::insert_new(
+                &conn,
+                &NewMessage {
+                    account_id,
+                    uidl: &uidl,
+                    message_id_header: None,
+                    subject: Some("s"),
+                    from_name: None,
+                    from_addr: Some("a@example.com"),
+                    to_addr: None,
+                    date_header: i as i64,
+                    size_bytes: raw.len() as i64,
+                    attachment_count: 0,
+                    preview: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let mut reports = Vec::new();
+        let count =
+            reindex_all_with_progress(&conn, maildir_dir.path(), &index, |p| reports.push(p)).unwrap();
+
+        assert_eq!(count, total);
+        assert_eq!(
+            reports,
+            vec![
+                ReindexProgress { processed: 0, total },
+                ReindexProgress { processed: PAGE_SIZE as usize, total },
+                ReindexProgress { processed: total, total },
+            ]
         );
     }
 

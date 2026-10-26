@@ -8,6 +8,7 @@
   import ColorRulesView from './ColorRulesView.svelte'
   import LabelRulesView from './LabelRulesView.svelte'
   import { updater, checkForUpdate } from './updater.svelte.js'
+  import { reindexer, runReindex, reindexPercent } from './reindex.svelte.js'
   import { applyAppearance, THEME_OPTIONS, ACCENT_COLOR_OPTIONS, FONT_SIZE_OPTIONS } from './appearance.js'
 
   let {
@@ -130,21 +131,6 @@
     }
   }
 
-  let reindexing = $state(false)
-  let reindexStatus = $state('')
-
-  async function runReindex() {
-    reindexing = true
-    reindexStatus = '再構築中…'
-    try {
-      const count = await invoke('reindex_all')
-      reindexStatus = `${count}件を再構築しました`
-    } catch (e) {
-      reindexStatus = `エラー: ${e}`
-    } finally {
-      reindexing = false
-    }
-  }
 
   // 0 = 無期限（自動削除しない）。既存ユーザーが不意にメールを失わないよう
   // 既定値も0にしている（db::settings::Settingsのドキュメント参照）。
@@ -550,12 +536,19 @@
               <div class="title">{R.reindex.title}</div>
               <div class="desc">{R.reindex.desc}</div>
             </div>
-            <button type="button" class="action-button" onclick={runReindex} disabled={reindexing}>
+            <button type="button" class="action-button" onclick={runReindex} disabled={reindexer.running}>
               再構築
             </button>
           </div>
-          {#if reindexStatus}
-            <p class="reindex-status">{reindexStatus}</p>
+          {#if reindexer.running}
+            <div class="reindex-progress">
+              <progress max={Math.max(reindexer.total, 1)} value={reindexer.processed}></progress>
+              <span class="reindex-status">
+                再構築中… {reindexer.processed.toLocaleString()} / {reindexer.total.toLocaleString()} 件（{reindexPercent()}%）
+              </span>
+            </div>
+          {:else if reindexer.status}
+            <p class="reindex-status">{reindexer.status}</p>
           {/if}
         {/if}
       </div>
@@ -870,6 +863,20 @@
   .retention-input {
     width: 70px;
     text-align: right;
+  }
+  .reindex-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 0;
+  }
+  .reindex-progress progress {
+    width: 100%;
+    height: 8px;
+    accent-color: var(--accent);
+  }
+  .reindex-progress .reindex-status {
+    padding: 0;
   }
   .reindex-status {
     margin: 8px 0 0;

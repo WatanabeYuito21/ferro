@@ -457,6 +457,13 @@
   メインスレッドから外す。新しくDBやロックに触るコマンドを足すときは、
   `async`にするか`(async)`属性を付けること。長時間かかる処理で`read_conn`/
   `write_conn`を握りっぱなしにしないこと。
+  v0.0.22で再構築の**進捗表示**を追加: `reindex::reindex_all_with_progress`が開始直後と
+  1000件のページごとに`ReindexProgress { processed, total }`を通知し（`total`は開始時の
+  `messages::count_live`。途中のsyncで増えたら`processed`に合わせて引き上げる）、
+  GUIは`reindex-progress`イベント→設定画面のプログレスバー、CLIは端末出力時のみ
+  `\r`で同じ行を上書き表示する。GUIの進捗状態は`frontend/src/lib/reindex.svelte.js`の
+  モジュール状態（設定画面を離れても続く）。同時実行は`AppState::reindex_running`で
+  2本目をエラーにする（互いの`clear`で索引を消し合うため）。
 - **SQLiteのクエリで`(?1 IS NULL OR col = ?1)`のようなOR分岐を書くと**、インデックスを使った
   範囲検索（SEARCH）ではなくCOVERING SCAN + 一時B-treeソートにフォールバックしやすい。
   新しいクエリを書く際は`EXPLAIN QUERY PLAN`で`SCAN`ではなく`SEARCH`になっているか確認すること。
