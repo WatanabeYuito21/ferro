@@ -859,7 +859,7 @@
                             checked={checkedIds.has(message.id)}
                             on:click|stopPropagation={() => setChecked(toggleChecked(checkedIds, message.id), message.id)}
                           />
-                          <span class="from" style={rowColor ? `color: ${rowColor}` : ''}>{message.from_name ?? message.from_addr ?? '(unknown sender)'}</span>
+                          <span class="from" style={rowColor ? `color: ${rowColor}` : ''}>{message.from_name ?? message.from_addr ?? '(unknown sender)'}{#if message.thread_size > 1}<span class="thread-count"> ({message.thread_size})</span>{/if}</span>
                           <span class="subject" style={rowColor ? `color: ${rowColor}` : ''}>{message.subject ?? '(no subject)'}</span>
                           <span class="date">{formatDate(message.date_header)}</span>
                         </div>
@@ -892,6 +892,7 @@
                     markReadDelay={settings.mark_read_delay}
                     onClose={() => (selectedMessageId = null)}
                     onChanged={handleMessagePatched}
+                    onOpenMessage={(id) => (selectedMessageId = id)}
                   />
                 </div>
               {/if}
@@ -1127,6 +1128,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .search-results .thread-count {
+    color: var(--text-muted);
+    font-weight: 400;
   }
   .search-results .date {
     flex: none;

@@ -20,3 +20,4 @@ pub mod reindex;
 pub mod search;
 pub mod settings;
 pub mod sync;
+pub mod threads;
