@@ -26,6 +26,13 @@ jobs:
         run: |
           VERSION=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # インストーラー名はtauri.conf.jsonのversionから付くため、Cargo.tomlと
+          # ずれたまま公開すると別バージョン名のAssetsになる(v0.0.13で実際に発生)。
+          TAURI_VERSION=$(grep -m1 '"version"' src-tauri/tauri.conf.json | sed -E 's/.*"version": *"([^"]*)".*//')
+          if [ "$TAURI_VERSION" != "$VERSION" ]; then
+            echo "::error::src-tauri/tauri.conf.json version ($TAURI_VERSION) != Cargo.toml version ($VERSION)"
+            exit 1
+          fi
           if git ls-remote --tags origin "refs/tags/v$VERSION" | grep -q .; then
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             echo "Tag v$VERSION already exists on origin; skipping release."
