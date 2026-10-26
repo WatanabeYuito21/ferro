@@ -312,6 +312,19 @@
   CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
   （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
   別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
+- **ディスクの最適化**（`ferro_core::maintenance`、v0.0.39）: 検索インデックスのセグメントを
+  1つにマージ（`SearchIndex::optimize`。削除済み文書の領域もここで回収）してからGCし、DBは
+  `VACUUM`＋`wal_checkpoint(TRUNCATE)`。`ANALYZE`/`PRAGMA optimize`はしない（統計が変わると
+  `EXPLAIN QUERY PLAN`で確かめたインデックスの選び方が変わりうるため）。再構築と同時に走らない
+  よう`begin_rebuild`の印を借りる（その間は起動時の拾い直しも止まる）。マージも新しいセグメント
+  ファイルを作るので、失敗したら`commit`と同じくwriterを作り直してエラーを返す。GUIは
+  `optimize_storage`（`write_conn`を握るので実行中は同期が待つ）、TUIは設定画面、CLIは
+  `ferro optimize`。どれも一時的に同じくらいの空き容量が要る。実データのコピー（DB 136MB・
+  索引78ファイル）で、DB 136→93MB、索引 78→7ファイル、約2秒。tantivyの掃除は「生きている
+  `SegmentMeta`」と「readerが開いているセグメント」のファイルを消さないので、マージ後は
+  `SegmentMeta`を手放し、readerを読み直してから`garbage_collect_files`を呼ぶ。なお索引を別の
+  場所へコピーして試すときは`.managed.json`も一緒に（`cp *`はドットファイルを拾わない）。
+  これが無いとtantivyは既存のファイルを自分の管理下と見なさず、掃除で一切消さない。
 - **未読数のバッジ**（v0.0.38、GUIのみ。`src-tauri/src/badge.rs`）: 受信箱の未読数
   （`messages::count_unread_inbox`）を、トレイアイコン（既定のウィンドウアイコンの右下に赤い札を
   重ねた画像＋ツールチップ）とタスクバー（Windowsは`set_overlay_icon`、それ以外は

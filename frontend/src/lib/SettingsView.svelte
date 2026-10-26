@@ -190,6 +190,29 @@
 
   let purging = $state(false)
   let purgeStatus = $state('')
+  let optimizing = $state(false)
+  let optimizeStatus = $state('')
+
+  function formatBytes(bytes) {
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+  }
+
+  async function runOptimize() {
+    optimizing = true
+    optimizeStatus = '最適化中…（件数によっては数十秒かかります）'
+    try {
+      const r = await invoke('optimize_storage')
+      optimizeStatus =
+        `${formatBytes(r.freed)}を空けました（データベース ${formatBytes(r.db_before)} → ${formatBytes(r.db_after)}、` +
+        `検索インデックス ${formatBytes(r.index_before)} → ${formatBytes(r.index_after)}）`
+    } catch (e) {
+      optimizeStatus = `エラー: ${e}`
+    } finally {
+      optimizing = false
+    }
+  }
 
   async function runPurge() {
     purging = true
@@ -288,6 +311,13 @@
         '0は削除しません。',
       keywords: 'server delete DELE サーバー 容量',
     },
+    optimize: {
+      title: 'ディスクを最適化',
+      desc:
+        'メールを消しても小さくならないデータベースと検索インデックスを詰めて、ディスクを空けます。' +
+        '保持期間の整理で大量に消した後などに。一時的に同じくらいの空き容量が要り、実行中は同期を待たせます。',
+      keywords: 'optimize vacuum compact disk 最適化 圧縮 容量 ディスク 空き データベース インデックス',
+    },
     purgeNow: {
       title: '今すぐ整理する',
       desc: '次回のバックグラウンド実行を待たず、保持日数を過ぎたメールを今すぐ削除します。',
@@ -358,9 +388,9 @@
     sync: { title: '同期', keywords: 'sync', rows: ['syncInterval'] },
     search: { title: '検索', keywords: 'search', rows: ['indexStatus', 'reindex'] },
     retention: {
-      title: '保持期間',
-      keywords: 'retention',
-      rows: ['retentionDays', 'serverDeleteDays', 'purgeNow'],
+      title: '保持期間とディスク',
+      keywords: 'retention disk',
+      rows: ['retentionDays', 'serverDeleteDays', 'purgeNow', 'optimize'],
     },
     notifications: {
       title: '通知とトレイ',
@@ -691,6 +721,20 @@
           </div>
           {#if purgeStatus}
             <p class="reindex-status">{purgeStatus}</p>
+          {/if}
+        {/if}
+        {#if showRow('optimize')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.optimize.title}</div>
+              <div class="desc">{R.optimize.desc}</div>
+            </div>
+            <button type="button" class="action-button" onclick={runOptimize} disabled={optimizing}>
+              今すぐ最適化する
+            </button>
+          </div>
+          {#if optimizeStatus}
+            <p class="reindex-status">{optimizeStatus}</p>
           {/if}
         {/if}
       </div>

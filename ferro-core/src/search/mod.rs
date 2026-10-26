@@ -435,6 +435,43 @@ impl SearchIndex {
         }
     }
 
+    /// セグメントを1つにマージし、不要になったファイルを消す（`maintenance::optimize`）。
+    /// 削除済み文書の領域もここで回収される。既に1つで削除済みも無ければマージはしない。
+    /// 失敗したら`commit`と同じくwriterを作り直してからエラーを返す（マージも新しい
+    /// セグメントファイルを作るので、Windows実機の`PermissionDenied`を踏みうる）。
+    pub fn optimize(&self) -> Result<()> {
+        let result = (|| -> Result<()> {
+            let mut slot = self.writer_slot()?;
+            let writer = slot.as_mut().ok_or(SearchError::WriterUnavailable)?;
+            // `SegmentMeta`は生きている間そのセグメントのファイルを掃除から守るので
+            // （tantivyが生存中のものを数えている）、idだけ取り出してすぐ手放す。
+            let (ids, needs_merge) = {
+                let metas = self.index.searchable_segment_metas()?;
+                let needs_merge = metas.len() > 1 || metas.iter().any(|meta| meta.has_deletes());
+                (metas.iter().map(|meta| meta.id()).collect::<Vec<_>>(), needs_merge)
+            };
+            if needs_merge {
+                drop(writer.merge(&ids).wait()?);
+            }
+            // マージ後の掃除はtantivyもするが、その時点ではまだreaderが古いセグメントを
+            // 開いているので消せない。readerを新しいセグメントへ切り替えてから、もう一度掃除する。
+            self.reader.reload()?;
+            writer.garbage_collect_files().wait()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.reader.reload()?;
+                Ok(())
+            }
+            Err(e) => {
+                crate::logging::log_line(&format!("search: optimize failed, recreating index writer: {e}"));
+                let _ = self.recover_writer();
+                Err(e)
+            }
+        }
+    }
+
     /// クエリにマッチする`messages.id`を受信日時の新しい順で返す。
     ///
     /// 以前は関連度スコア順だったが、「検索しても新しい順に並ばない」という

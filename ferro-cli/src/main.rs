@@ -63,6 +63,9 @@ enum Command {
     },
     /// 全メッセージから検索インデックスを作り直す（DB/Maildirから再構築可能な派生キャッシュ）
     Reindex,
+    /// データベースと検索インデックスを詰めてディスクを空ける（メールを大量に消した後などに。
+    /// 一時的に同じくらいの空き容量が要る。GUI/TUIを閉じて実行）
+    Optimize,
     /// 開発用: 大量の合成メッセージでSQLite挿入/Tantivy索引/一覧/検索のスループット・
     /// レイテンシを計測する。本番のDB/Maildir/検索インデックスには一切触れず、
     /// $TMPDIR/ferro-bench配下に専用データを生成する
@@ -205,6 +208,23 @@ fn main() -> anyhow::Result<()> {
         } => run_list_command(&conn, account, before, limit)?,
         Command::Search { query, limit } => run_search_command(&conn, &search_index, &query, limit)?,
         Command::Reindex => run_reindex_command(&conn, &search_index)?,
+        Command::Optimize => {
+            let report = ferro_core::maintenance::optimize(
+                &conn,
+                &paths::db_path(),
+                &search_index,
+                &paths::search_index_dir(),
+            )?;
+            let mb = |bytes: u64| bytes as f64 / 1_048_576.0;
+            println!(
+                "freed {:.1} MB (database {:.1} -> {:.1} MB, search index {:.1} -> {:.1} MB).",
+                mb(report.freed()),
+                mb(report.db_before),
+                mb(report.db_after),
+                mb(report.index_before),
+                mb(report.index_after)
+            );
+        }
         Command::Dedupe { apply } => run_dedupe_command(&conn, &search_index, apply)?,
         Command::Bench { count } => bench::run(count)?,
         Command::Read { message_id, unread } => {
