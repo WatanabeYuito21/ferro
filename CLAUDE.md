@@ -244,6 +244,16 @@
   外れた行は取り除き、次の行（末尾なら前の行）を開く。削除・スヌーズ後に本文を閉じていた
   動作も、この「次へ進む」に置き換えた。一覧の再読み込み（`messageListRefreshToken`）は
   「今すぐ適用」のような一括変更でだけ使う。
+- **複数選択と一括操作**（v0.0.28、GUIのみ）: 開いているメッセージ(`selectedMessageId`)とは
+  別に、チェック済みのidの集合(`checkedIds`)をApp.svelteが持つ。クリックの解釈（修飾キー無しは
+  選択解除して開く、Ctrl/⌘は1件ずつ、Shiftは直前にクリックした行からの範囲）は
+  `messageView.js`の`clickSelection`に集約し、通常の一覧(`MessageList`)と検索結果の両方で使う。
+  操作は`bulk_update`コマンド→`message_actions::apply_bulk`（DBの変更は1トランザクション、
+  削除時の検索インデックスからの除去はcommit 1回）。結果は1件の操作と同じく`applyPatch`で
+  各行に当て、開いていた本文が対象に含まれていたら閉じる（本文側の表示が古くなるため）。
+  `bulk_update`の`action`はserdeの内部タグ付きenum（`{ kind: "label", label_id, assigned }`）で、
+  Tauriはコマンド引数のトップレベルしかcamelCase→snake_caseに変換しないので、中のフィールドは
+  フロント側でもsnake_caseで書く。
 - **.eml書き出し**（`ferro_core::mail::export`、v0.0.26）: Maildirのファイル自体が既に
   RFC 5322の生メールなので、変換はせずバイト列をそのまま書き出す。GUIは本文表示の
   「.emlとして保存…」（`save_message_eml`コマンド＋`tauri-plugin-dialog`の保存ダイアログ）、

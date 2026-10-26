@@ -34,11 +34,14 @@ export function belongsToView(message, view, nowSeconds = Date.now() / 1000) {
 
 // `items`の中で`id`の行を`patch`で更新する。表示条件から外れたら取り除き、
 // 代わりに選ぶべき行のid（直後の行、末尾なら直前の行、無ければnull）を返す。
+// `patch`は変更する項目のオブジェクトか、行を受け取ってそれを返す関数
+// （一括でラベルを付け外しする時のように、行ごとに値が違う場合）。
 // 戻り値: { items, removed, nextId }
 export function applyPatch(items, id, patch, view) {
   const index = items.findIndex((m) => m.id === id)
   if (index === -1) return { items, removed: false, nextId: id }
-  const updated = { ...items[index], ...patch }
+  const changes = typeof patch === 'function' ? patch(items[index]) : patch
+  const updated = { ...items[index], ...changes }
   if (belongsToView(updated, view)) {
     const next = items.slice()
     next[index] = updated
@@ -47,6 +50,33 @@ export function applyPatch(items, id, patch, view) {
   const next = items.slice(0, index).concat(items.slice(index + 1))
   const neighbor = next[index] ?? next[index - 1] ?? null
   return { items: next, removed: true, nextId: neighbor ? neighbor.id : null }
+}
+
+// 行のクリックを複数選択として解釈する（Ctrl/⌘+クリックで1件ずつ、Shift+クリックで
+// 範囲を追加。修飾キー無しのクリックは選択を解除してその行を開く）。
+// `checked`はチェック済みidのSet、`anchor`は範囲選択の起点（直前にクリックした行）。
+// 戻り値: { checked, anchor, open }（`open`がtrueならその行を開く）
+export function clickSelection(items, checked, anchor, id, event) {
+  if (event.shiftKey && anchor != null) {
+    const from = items.findIndex((m) => m.id === anchor)
+    const to = items.findIndex((m) => m.id === id)
+    if (from !== -1 && to !== -1) {
+      const next = new Set(checked)
+      for (let i = Math.min(from, to); i <= Math.max(from, to); i++) next.add(items[i].id)
+      return { checked: next, anchor, open: false }
+    }
+  }
+  if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    return { checked: toggleChecked(checked, id), anchor: id, open: false }
+  }
+  return { checked: new Set(), anchor: id, open: true }
+}
+
+export function toggleChecked(checked, id) {
+  const next = new Set(checked)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  return next
 }
 
 // `id`の行から`delta`行動いた先の行のid。`id`が一覧に無ければ先頭の行。
