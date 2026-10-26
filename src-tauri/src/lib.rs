@@ -14,7 +14,7 @@ use ferro_core::db::messages::{Folder, Message};
 use ferro_core::db::{self, Connection};
 use ferro_core::label_rules::{self, LabelRule};
 use ferro_core::mail::attachments::{self, AttachmentInfo};
-use ferro_core::mail::export;
+use ferro_core::mail::{export, source};
 use ferro_core::mail::parse::extract_plain_text_body;
 use ferro_core::message_filter::MessageFilter;
 use ferro_core::search::SearchIndex;
@@ -349,6 +349,24 @@ fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<Message
         eml_filename,
         thread,
     })
+}
+
+#[derive(Serialize)]
+struct SourceView {
+    text: String,
+    truncated: bool,
+    total_bytes: usize,
+}
+
+/// 本文表示の「ヘッダー」「ソース」タブ用に、生のヘッダー部（`headers_only`）か
+/// メール全体（大きければ先頭`source::SOURCE_DISPLAY_LIMIT`バイトまで）を返す。
+#[tauri::command(async)]
+fn get_message_source(state: State<AppState>, message_id: i64, headers_only: bool) -> Result<SourceView, String> {
+    let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
+    let (_message, raw) = load_message_and_raw(&conn, message_id)?;
+    drop(conn);
+    let source = source::source_text(&raw, headers_only);
+    Ok(SourceView { text: source.text, truncated: source.truncated, total_bytes: source.total_bytes })
 }
 
 /// メッセージを`.eml`（Maildirに保存している生のバイト列そのまま）として、
@@ -1574,6 +1592,7 @@ pub fn run() {
             get_message_detail,
             save_attachment,
             save_message_eml,
+            get_message_source,
             set_read,
             set_flagged,
             set_deleted,

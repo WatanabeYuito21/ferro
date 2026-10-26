@@ -52,6 +52,8 @@ pub struct MessageDetail {
     pub body: Option<String>,
     pub attachments: Vec<AttachmentInfo>,
     pub labels: Vec<ferro_core::db::labels::Label>,
+    /// 生のヘッダー部（`H`で本文の代わりに表示する）。
+    pub headers: Option<String>,
 }
 
 const PAGE_SIZE: u32 = 200;
@@ -84,6 +86,8 @@ pub struct App {
     pub list_loading: bool,
 
     pub detail: Option<MessageDetail>,
+    /// 本文の代わりに生のヘッダーを表示するか（`H`で切り替え。別のメッセージに移っても保つ）。
+    pub show_headers: bool,
     /// 本文を表示してから`mark_read_delay`秒後に既読化するためのタイマー。
     pub read_delay_deadline: Option<Instant>,
 
@@ -133,6 +137,7 @@ impl App {
             list_exhausted: false,
             list_loading: false,
             detail: None,
+            show_headers: false,
             read_delay_deadline: None,
             search_mode: false,
             search_input: Input::default(),
@@ -242,12 +247,13 @@ impl App {
         let labels = ferro_core::db::labels::for_message(&conn, message.id)?;
         drop(conn);
 
-        let (body, attachments) = match &raw {
+        let (body, attachments, headers) = match &raw {
             Some(raw) => (
                 mail::parse::extract_plain_text_body(raw),
                 mail::attachments::list_attachments(raw),
+                Some(mail::source::source_text(raw, true).text),
             ),
-            None => (None, Vec::new()),
+            None => (None, Vec::new(), None),
         };
 
         if !message.is_read {
@@ -258,7 +264,7 @@ impl App {
             }
         }
 
-        self.detail = Some(MessageDetail { message, body, attachments, labels });
+        self.detail = Some(MessageDetail { message, body, attachments, labels, headers });
         Ok(())
     }
 
