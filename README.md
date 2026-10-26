@@ -278,7 +278,7 @@ GitHub Actions（`.github/workflows/release.yml`）が同じバージョンの�
 
 更新の署名には専用の鍵ペアを使います（インストーラーのコード署名とは別物）。
 
-1. `cargo tauri signer generate -w ~/.tauri/ferro.key`で鍵を作る
+1. `cargo tauri signer generate -w $HOME/.tauri/ferro.key`で鍵を作る（PowerShellでは`~`が展開されずカレントに`~`フォルダができるので`$HOME`を使う）
 2. 公開鍵を`src-tauri/tauri.conf.json`の`plugins.updater.pubkey`に貼る
 3. 秘密鍵の中身を、GitHubリポジトリのSecrets `TAURI_SIGNING_PRIVATE_KEY`に登録する
    （パスワードを付けたなら`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`も）

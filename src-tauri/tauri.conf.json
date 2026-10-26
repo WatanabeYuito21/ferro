@@ -23,7 +23,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "REPLACE_WITH_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDNDE2NUJBRTlEMDI0RDIKUldUU0pORHB1bVZCTENhajlpRmlTUERSV1JRTjJMTHZ1OXpMWnJGVW5Rb3dpWlhkc2tOOFc0ODcK",
       "endpoints": [
         "https://github.com/WatanabeYuito21/ferro/releases/latest/download/latest.json"
       ],

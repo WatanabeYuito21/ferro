@@ -289,7 +289,7 @@
   Releaseに添付する。対象はWindows NSIS(`*setup.exe`)とLinux AppImageのみ。
   **ビルドにはGitHub Secretsの`TAURI_SIGNING_PRIVATE_KEY`が必須**（未設定だと`cargo tauri build`が
   失敗する）。`tauri.conf.json`の`plugins.updater.pubkey`は鍵生成後に実際の公開鍵へ
-  差し替えること（`REPLACE_WITH_PUBLIC_KEY`のままだと更新確認はエラーになる）。
+  差し替えること（公開鍵は設定済み）。
   秘密鍵を失うと既存インストールへ更新を配れなくなる。
 - **リリース自動化**（`.github/workflows/release.yml`）: `main`へのpush毎に起動するが、
   実際にビルド・GitHub Releaseを作るのはルート`Cargo.toml`の`workspace.package.version`
