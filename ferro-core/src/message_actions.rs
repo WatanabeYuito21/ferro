@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use crate::db::Connection;
+use crate::db::labels;
 use crate::db::messages;
 use crate::db::purged_uidls;
 use crate::maildir;
@@ -34,6 +35,54 @@ pub fn set_deleted(
     if is_deleted {
         search_index.delete_message(id)?;
         search_index.commit()?;
+    }
+    Ok(())
+}
+
+/// 複数のメッセージにまとめて行う操作（GUIの複数選択からの一括操作）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BulkAction {
+    SetRead(bool),
+    SetFlagged(bool),
+    SetArchived(bool),
+    /// `None`でスヌーズ解除。
+    Snooze(Option<i64>),
+    /// 論理削除（`set_deleted`と同じく検索インデックスからも取り除く）。
+    Delete,
+    SetLabel { label_id: i64, assigned: bool },
+}
+
+/// `ids`の全メッセージに`action`を行う。DBの変更は1つのトランザクションにまとめ
+/// （途中で失敗したら1件も変えない）、削除の場合は検索インデックスからの除去も
+/// 1回のcommitで済ませる（1件ずつ`set_deleted`を呼ぶとcommitが件数分走る）。
+pub fn apply_bulk(
+    conn: &Connection,
+    search_index: &SearchIndex,
+    ids: &[i64],
+    action: BulkAction,
+) -> Result<(), MessageActionError> {
+    let tx = conn.unchecked_transaction()?;
+    for &id in ids {
+        match action {
+            BulkAction::SetRead(value) => messages::set_read(&tx, id, value)?,
+            BulkAction::SetFlagged(value) => messages::set_flagged(&tx, id, value)?,
+            BulkAction::SetArchived(value) => messages::set_archived(&tx, id, value)?,
+            BulkAction::Snooze(until) => messages::set_snoozed(&tx, id, until)?,
+            BulkAction::Delete => messages::set_deleted(&tx, id, true)?,
+            BulkAction::SetLabel { label_id, assigned } => {
+                labels::set_on_message(&tx, id, label_id, assigned)?
+            }
+        }
+    }
+    tx.commit()?;
+
+    if action == BulkAction::Delete {
+        with_commit_retry(|| {
+            for &id in ids {
+                search_index.delete_message(id)?;
+            }
+            search_index.commit()
+        })?;
     }
     Ok(())
 }
@@ -168,6 +217,84 @@ mod tests {
 
         assert!(db_messages::get(&conn, id).unwrap().unwrap().is_deleted);
         assert!(search_index.search("findable", 10).unwrap().is_empty());
+    }
+
+    fn insert_message(conn: &Connection, account_id: i64, uidl: &str) -> i64 {
+        db_messages::insert_new(
+            conn,
+            &NewMessage {
+                account_id,
+                uidl,
+                message_id_header: None,
+                subject: Some(uidl),
+                from_name: None,
+                from_addr: None,
+                to_addr: None,
+                date_header: 1000,
+                size_bytes: 0,
+                attachment_count: 0,
+                preview: None,
+            },
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn apply_bulk_changes_every_given_message_and_nothing_else() {
+        let conn = open_in_memory().unwrap();
+        let search_index = SearchIndex::create_in_ram().unwrap();
+        let account_id = make_account(&conn);
+        let a = insert_message(&conn, account_id, "a");
+        let b = insert_message(&conn, account_id, "b");
+        let untouched = insert_message(&conn, account_id, "c");
+
+        apply_bulk(&conn, &search_index, &[a, b], BulkAction::SetRead(true)).unwrap();
+        apply_bulk(&conn, &search_index, &[a, b], BulkAction::SetFlagged(true)).unwrap();
+        apply_bulk(&conn, &search_index, &[a, b], BulkAction::SetArchived(true)).unwrap();
+        apply_bulk(&conn, &search_index, &[a, b], BulkAction::Snooze(Some(5000))).unwrap();
+        for id in [a, b] {
+            let m = db_messages::get(&conn, id).unwrap().unwrap();
+            assert!(m.is_read && m.is_flagged && m.is_archived);
+            assert_eq!(m.snoozed_until, Some(5000));
+        }
+        let c = db_messages::get(&conn, untouched).unwrap().unwrap();
+        assert!(!c.is_read && !c.is_flagged && !c.is_archived);
+        assert_eq!(c.snoozed_until, None);
+
+        let label_id = crate::db::labels::insert(&conn, "work", "#000000").unwrap();
+        apply_bulk(&conn, &search_index, &[a, b], BulkAction::SetLabel { label_id, assigned: true }).unwrap();
+        assert_eq!(crate::db::labels::for_message(&conn, a).unwrap().len(), 1);
+        apply_bulk(&conn, &search_index, &[a], BulkAction::SetLabel { label_id, assigned: false }).unwrap();
+        assert!(crate::db::labels::for_message(&conn, a).unwrap().is_empty());
+        assert_eq!(crate::db::labels::for_message(&conn, b).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn apply_bulk_delete_also_removes_messages_from_the_search_index() {
+        let conn = open_in_memory().unwrap();
+        let search_index = SearchIndex::create_in_ram().unwrap();
+        let account_id = make_account(&conn);
+        let ids: Vec<i64> = ["a", "b", "c"].iter().map(|u| insert_message(&conn, account_id, u)).collect();
+        for &id in &ids {
+            search_index
+                .index_message(&crate::search::IndexableMessage {
+                    id,
+                    subject: "findable",
+                    from: "",
+                    body: "",
+                    date_header: 1000,
+                })
+                .unwrap();
+        }
+        search_index.commit().unwrap();
+
+        apply_bulk(&conn, &search_index, &ids[..2], BulkAction::Delete).unwrap();
+
+        assert!(db_messages::get(&conn, ids[0]).unwrap().unwrap().is_deleted);
+        assert!(db_messages::get(&conn, ids[1]).unwrap().unwrap().is_deleted);
+        assert!(!db_messages::get(&conn, ids[2]).unwrap().unwrap().is_deleted);
+        assert_eq!(search_index.search("findable", 10).unwrap(), vec![ids[2]]);
     }
 
     fn make_account(conn: &Connection) -> i64 {
