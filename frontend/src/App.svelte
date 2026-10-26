@@ -9,7 +9,13 @@
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
   import { applyAppearance } from './lib/appearance.js'
-  import { checkForUpdate } from './lib/updater.svelte.js'
+  import {
+    updater,
+    checkForUpdate,
+    installAvailableUpdate,
+    dismissAvailableUpdate,
+    startDailyUpdateCheck,
+  } from './lib/updater.svelte.js'
 
   // Add account/Account listはメニューバー(View > Manage Accounts…)から開く
   // 別画面として切り出している（`navigate`イベントで切り替える。下のonMount参照）。
@@ -194,6 +200,7 @@
   let unlistenSyncProgress
   let unlistenNavigate
   let unlistenCheckForUpdate
+  let stopDailyUpdateCheck
   let unlistenRetentionPurge
 
   onMount(async () => {
@@ -214,6 +221,10 @@
     } catch (e) {
       error = String(e)
     }
+
+    // 1日1回の更新確認。設定は設定画面での変更後に`refreshSettings`で
+    // 読み直されるので、毎回`settings`を見る。
+    stopDailyUpdateCheck = startDailyUpdateCheck(() => settings.auto_update_check !== false)
 
     // バックグラウンド定期同期（src-tauri側のspawn_background_sync）の結果を
     // 手動Syncボタンと同じステータス表示に反映する。
@@ -280,6 +291,7 @@
     unlistenSyncProgress?.()
     unlistenNavigate?.()
     unlistenCheckForUpdate?.()
+    stopDailyUpdateCheck?.()
     unlistenRetentionPurge?.()
   })
 
@@ -403,6 +415,28 @@
     />
 
     <div class="main-content">
+      {#if updater.available && !updater.dismissed}
+        <div class="update-banner" role="status">
+          <span class="update-banner-text">
+            {#if updater.busy || updater.status}
+              {updater.status}
+            {:else if updater.error}
+              更新に失敗しました: {updater.error}
+            {:else}
+              新しいバージョン v{updater.available.version} があります（現在 v{updater.available.currentVersion}）
+            {/if}
+          </span>
+          <button
+            type="button"
+            class="update-banner-primary"
+            on:click={installAvailableUpdate}
+            disabled={updater.busy}
+          >
+            今すぐ更新
+          </button>
+          <button type="button" on:click={dismissAvailableUpdate} disabled={updater.busy}>後で</button>
+        </div>
+      {/if}
       {#if currentView === 'settings'}
         <SettingsView
           {accounts}
@@ -616,6 +650,42 @@
     font-weight: 500;
     text-align: left;
     cursor: pointer;
+  }
+  .update-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 0.75rem;
+    padding: 8px 14px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--accent-soft-bg);
+    color: var(--accent-hover);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .update-banner-text {
+    flex: 1;
+    min-width: 0;
+  }
+  .update-banner button {
+    flex: none;
+    padding: 4px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+  }
+  .update-banner button.update-banner-primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+  .update-banner button:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
   .new-mail-banner:hover {
     background: var(--accent-soft-bg);

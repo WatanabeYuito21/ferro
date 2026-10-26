@@ -277,6 +277,11 @@
       desc: '次回のバックグラウンド実行を待たず、保持日数を過ぎたメールを今すぐ削除します。',
       keywords: 'purge 削除 整理 クリーンアップ',
     },
+    autoUpdateCheck: {
+      title: '1日1回、更新を自動確認',
+      desc: '新しいバージョンがあれば、画面上部のバナーでお知らせします（更新するかはその都度選べます）。',
+      keywords: 'auto update check 自動確認 通知 バナー',
+    },
     checkUpdate: {
       title: '更新を確認',
       desc:
@@ -315,7 +320,7 @@
       keywords: 'retention',
       rows: ['retentionDays', 'serverDeleteDays', 'purgeNow'],
     },
-    update: { title: 'アップデート', keywords: 'update', rows: ['checkUpdate'] },
+    update: { title: 'アップデート', keywords: 'update', rows: ['autoUpdateCheck', 'checkUpdate'] },
     diagnostics: { title: '診断', keywords: 'diagnostics', rows: ['logFile'] },
     colorRules: {
       title: '色分けルール',
@@ -611,6 +616,24 @@
     {#if showSection('update')}
       <h2 class="section-title" id="update-section">{SECTIONS.update.title}</h2>
       <div class="rows">
+        {#if showRow('autoUpdateCheck')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.autoUpdateCheck.title}</div>
+              <div class="desc">{R.autoUpdateCheck.desc}</div>
+            </div>
+            <button
+              type="button"
+              class="switch"
+              class:on={settings.auto_update_check}
+              onclick={() => toggle('auto_update_check')}
+              aria-pressed={settings.auto_update_check}
+              aria-label={R.autoUpdateCheck.title}
+            >
+              <span class="knob"></span>
+            </button>
+          </div>
+        {/if}
         {#if showRow('checkUpdate')}
           <div class="row">
             <div class="text">
