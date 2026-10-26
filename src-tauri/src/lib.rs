@@ -11,6 +11,7 @@ use ferro_core::logging;
 use ferro_core::db::accounts::Account;
 use ferro_core::db::labels::Label;
 use ferro_core::db::messages::{Folder, Message};
+use ferro_core::db::sync_status::SyncStatus;
 use ferro_core::db::{self, Connection};
 use ferro_core::label_rules::{self, LabelRule};
 use ferro_core::mail::attachments::{self, AttachmentInfo};
@@ -101,6 +102,35 @@ struct AccountView {
     port: u16,
     username: String,
     use_tls: bool,
+    /// UIDLに対応しているか（`None`はまだ判定していない）。
+    uidl_supported: Option<bool>,
+    /// 直近の同期結果（`db::sync_status`。まだ同期していなければ`None`）。
+    sync_status: Option<SyncStatusView>,
+}
+
+#[derive(Serialize)]
+struct SyncStatusView {
+    last_attempt_at: i64,
+    last_success_at: Option<i64>,
+    last_error: Option<String>,
+    last_fetched: u32,
+    last_remaining: u32,
+    last_ended_early: bool,
+    consecutive_failures: u32,
+}
+
+impl From<SyncStatus> for SyncStatusView {
+    fn from(s: SyncStatus) -> Self {
+        SyncStatusView {
+            last_attempt_at: s.last_attempt_at,
+            last_success_at: s.last_success_at,
+            last_error: s.last_error,
+            last_fetched: s.last_fetched,
+            last_remaining: s.last_remaining,
+            last_ended_early: s.last_ended_early,
+            consecutive_failures: s.consecutive_failures,
+        }
+    }
 }
 
 impl From<Account> for AccountView {
@@ -112,8 +142,24 @@ impl From<Account> for AccountView {
             port: a.port,
             username: a.username,
             use_tls: a.use_tls,
+            uidl_supported: a.uidl_supported,
+            sync_status: None,
         }
     }
+}
+
+/// アカウント一覧に直近の同期結果を付けて返す（`list_accounts`/`reload_accounts_config`）。
+fn account_views(conn: &Connection, accounts: Vec<Account>) -> Result<Vec<AccountView>, String> {
+    let mut statuses = db::sync_status::list(conn).map_err(|e| e.to_string())?;
+    Ok(accounts
+        .into_iter()
+        .map(|account| {
+            let status = statuses.remove(&account.id);
+            let mut view = AccountView::from(account);
+            view.sync_status = status.map(SyncStatusView::from);
+            view
+        })
+        .collect())
 }
 
 #[derive(Serialize, Clone)]
@@ -510,9 +556,8 @@ fn save_attachment(
 #[tauri::command(async)]
 fn list_accounts(state: State<AppState>) -> Result<Vec<AccountView>, String> {
     let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
-    db::accounts::list(&conn)
-        .map(|accounts| accounts.into_iter().map(AccountView::from).collect())
-        .map_err(|e| e.to_string())
+    let accounts = db::accounts::list(&conn).map_err(|e| e.to_string())?;
+    account_views(&conn, accounts)
 }
 
 fn parse_folder(folder: &str) -> Result<Folder, String> {
@@ -777,9 +822,9 @@ async fn reload_accounts_config(app: AppHandle) -> Result<Vec<AccountView>, Stri
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
-        account_config::load_and_reconcile(&conn, &paths::accounts_config_path())
-            .map(|accounts| accounts.into_iter().map(AccountView::from).collect())
-            .map_err(|e| e.to_string())
+        let accounts =
+            account_config::load_and_reconcile(&conn, &paths::accounts_config_path()).map_err(|e| e.to_string())?;
+        account_views(&conn, accounts)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1321,11 +1366,14 @@ fn run_background_sync_once(app_handle: &AppHandle) {
 
     for account in accounts {
         let event = match credentials::get_password(account.id) {
-            Err(e) => BackgroundSyncEvent {
-                account_id: account.id,
-                summary: None,
-                error: Some(format!("failed to read password from OS keyring: {e}")),
-            },
+            Err(e) => {
+                let error = format!("failed to read password from OS keyring: {e}");
+                // 同期そのものに入れなかった失敗も、アカウント一覧の同期状態に残す。
+                if let Ok(conn) = state.write_conn.lock() {
+                    let _ = db::sync_status::record_failure(&conn, account.id, now_unix(), &error);
+                }
+                BackgroundSyncEvent { account_id: account.id, summary: None, error: Some(error) }
+            }
             Ok(password) => {
                 // 手動Syncが走っている（またはロック待ち）なら、そのアカウント以降の
                 // 自動同期は次のサイクルに回す。手動Syncが全件取り終えた直後に

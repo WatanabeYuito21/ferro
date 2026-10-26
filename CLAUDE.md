@@ -311,6 +311,13 @@
   CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
   （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
   別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
+- **アカウントごとの同期状態**（`db::sync_status`、migration 0011、v0.0.34）: `sync_account_with_limit`は
+  中身を`sync_account_inner`に移した薄い包みで、成功・失敗のたびに`account_sync_status`へ記録する
+  （どこから同期しても残る。記録に失敗しても同期の結果は変えず`ferro.log`に出すだけ）。失敗は
+  `consecutive_failures`を数え上げ、直近の成功の時刻・件数は残す。GUIのバックグラウンド同期で
+  keyringからパスワードを読めなかった場合も記録する。表示はGUI設定画面のアカウント一覧
+  （`AccountsView.svelte`。`list_accounts`の`sync_status`/`uidl_supported`）、TUI設定画面、
+  `ferro account list`（CLI/TUIはタイムゾーンを持たないので「5分前」の相対表示＝`describe`）。
 - **ヘッダー・ソース表示**（`ferro_core::mail::source`、v0.0.33）: 本文表示の「本文/ヘッダー/ソース」
   タブ（GUI、`v`キー）とTUIの`H`キー。Maildirの生バイト列のヘッダー部（最初の空行まで）か全体を
   そのまま見せる調査用の表示なので、RFC 2047のエンコードもデコードしない。行ごとにUTF-8として

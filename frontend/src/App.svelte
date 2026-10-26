@@ -514,6 +514,7 @@
     unlistenBackgroundSync = await listen('background-sync', (event) => {
       const { account_id, fetched, remaining, ended_early, error: syncError } = event.payload
       if (manualSyncing.has(account_id)) return
+      refreshAccounts().catch(() => {})
       if (syncError) {
         syncStatus = { ...syncStatus, [account_id]: `background sync error: ${syncError}` }
         return
@@ -633,6 +634,8 @@
       syncStatus = { ...syncStatus, [accountId]: `error: ${e}` }
     } finally {
       manualSyncing.delete(accountId)
+      // 直近の同期結果（成功・失敗の記録）を読み直す。
+      refreshAccounts().catch(() => {})
     }
   }
 

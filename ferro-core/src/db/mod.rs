@@ -7,6 +7,7 @@ pub mod labels;
 mod migrate;
 pub mod messages;
 pub mod purged_uidls;
+pub mod sync_status;
 
 /// DBファイルを開き、未適用のマイグレーションを適用してから返す。
 /// CLIとGUI(Tauri)はどちらもこの関数を通して同じパスのDBを開く。
