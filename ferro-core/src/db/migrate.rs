@@ -53,6 +53,10 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         sql: include_str!("../../migrations/0011_account_sync_status.sql"),
     },
+    Migration {
+        version: 12,
+        sql: include_str!("../../migrations/0012_rule_notify_muted.sql"),
+    },
 ];
 
 /// 未適用のマイグレーションを`schema_migrations`テーブルの記録に基づいて適用する。

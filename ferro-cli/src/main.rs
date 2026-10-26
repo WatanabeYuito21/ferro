@@ -8,7 +8,7 @@ use ferro_core::account_setup;
 use ferro_core::db::accounts;
 use ferro_core::db::labels;
 use ferro_core::db::messages;
-use ferro_core::label_rules::LabelRule;
+use ferro_core::label_rules::{LabelRule, RuleActions};
 use ferro_core::message_filter::MessageFilter;
 use ferro_core::search::SearchIndex;
 use ferro_core::{credentials, label_rules, paths, reindex, settings, sync};
@@ -116,11 +116,12 @@ enum LabelAction {
 #[derive(Subcommand)]
 enum LabelRuleAction {
     /// ルールを1件追加する。From/Subject/Bodyは省略可能（すべて省略した条件は
-    /// 何にもマッチしない）。指定した条件はAND（すべて満たした場合のみ付与）
+    /// 何にもマッチしない）。指定した条件はAND（すべて満たした場合のみ付与）。
+    /// --labelと--mark-read/--archive/--star/--skip-notificationのどれか1つ以上が要る
     Add {
         /// 付与するラベルの名前（既存のラベル名。`ferro label list`で確認できる）
         #[arg(long)]
-        label: String,
+        label: Option<String>,
         #[arg(long)]
         from: Option<String>,
         #[arg(long)]
@@ -130,6 +131,18 @@ enum LabelRuleAction {
         /// true=添付ありのみ、false=添付なしのみ、省略時は問わない
         #[arg(long)]
         has_attachment: Option<bool>,
+        /// 既読にする（既読のメールは新着通知も出ない）
+        #[arg(long)]
+        mark_read: bool,
+        /// アーカイブする（受信箱に出さない）
+        #[arg(long)]
+        archive: bool,
+        /// スターを付ける
+        #[arg(long)]
+        star: bool,
+        /// 新着のデスクトップ通知を出さない（GUI）
+        #[arg(long)]
+        skip_notification: bool,
     },
     /// ルール一覧を表示する
     List,
@@ -237,7 +250,7 @@ fn run_label_command(conn: &ferro_core::db::Connection, action: LabelAction) -> 
 fn run_label_rule_command(conn: &ferro_core::db::Connection, action: LabelRuleAction) -> anyhow::Result<()> {
     let config_path = paths::label_rules_config_path();
     match action {
-        LabelRuleAction::Add { label, from, subject, body, has_attachment } => {
+        LabelRuleAction::Add { label, from, subject, body, has_attachment, mark_read, archive, star, skip_notification } => {
             let filter = MessageFilter {
                 from_contains: from,
                 subject_contains: subject,
@@ -247,12 +260,13 @@ fn run_label_rule_command(conn: &ferro_core::db::Connection, action: LabelRuleAc
             if filter.is_empty() {
                 anyhow::bail!("at least one of --from/--subject/--body/--has-attachment is required");
             }
-            label_rules::add(&config_path, LabelRule { label_name: label, filter })?;
+            let actions = RuleActions { mark_read, archive, star, skip_notification };
+            label_rules::add(&config_path, LabelRule { label_name: label.unwrap_or_default(), filter, actions })?;
             println!("rule added.");
         }
         LabelRuleAction::List => {
             for (i, rule) in label_rules::load(&config_path)?.rules.iter().enumerate() {
-                println!("[{i}] label={:?} {:?}", rule.label_name, rule.filter);
+                println!("[{i}] label={:?} {:?} {:?}", rule.label_name, rule.filter, rule.actions);
             }
         }
         LabelRuleAction::Remove { index } => {
@@ -262,7 +276,7 @@ fn run_label_rule_command(conn: &ferro_core::db::Connection, action: LabelRuleAc
         LabelRuleAction::Apply => {
             let rules = label_rules::load(&config_path)?;
             let applied = label_rules::apply_all(conn, &paths::maildir_dir(), &rules)?;
-            println!("{applied} label(s) applied to existing mail.");
+            println!("rules changed {applied} existing message(s).");
         }
     }
     Ok(())
