@@ -13,7 +13,7 @@ use ferro_core::db::labels::Label;
 use ferro_core::db::messages::{Folder, Message};
 use ferro_core::db::sync_status::SyncStatus;
 use ferro_core::db::{self, Connection};
-use ferro_core::label_rules::{self, LabelRule};
+use ferro_core::label_rules::{self, LabelRule, RuleActions};
 use ferro_core::mail::attachments::{self, AttachmentInfo};
 use ferro_core::mail::{export, source};
 use ferro_core::mail::parse::extract_plain_text_body;
@@ -892,19 +892,31 @@ fn get_label_rules() -> Result<Vec<LabelRule>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// 受信ルールを追加する。`label_name`が空ならラベルは付けず、動作（既読にする等）だけを行う。
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn add_label_rule(
     label_name: String,
     from_contains: Option<String>,
     subject_contains: Option<String>,
     body_contains: Option<String>,
     has_attachment: Option<bool>,
+    mark_read: Option<bool>,
+    archive: Option<bool>,
+    star: Option<bool>,
+    skip_notification: Option<bool>,
 ) -> Result<Vec<LabelRule>, String> {
     let filter = MessageFilter { from_contains, subject_contains, body_contains, has_attachment };
     if filter.is_empty() {
         return Err("From/件名/本文/添付有無のいずれか1つ以上を指定してください".to_string());
     }
-    label_rules::add(&paths::label_rules_config_path(), LabelRule { label_name, filter })
+    let actions = RuleActions {
+        mark_read: mark_read.unwrap_or(false),
+        archive: archive.unwrap_or(false),
+        star: star.unwrap_or(false),
+        skip_notification: skip_notification.unwrap_or(false),
+    };
+    label_rules::add(&paths::label_rules_config_path(), LabelRule { label_name, filter, actions })
         .map(|file| file.rules)
         .map_err(|e| e.to_string())
 }
@@ -921,7 +933,7 @@ fn label_rules_config_path() -> String {
     paths::label_rules_config_path().display().to_string()
 }
 
-/// 既存の全メッセージへ遡ってラベルルールを適用する（「今すぐ適用」ボタン）。
+/// 既存の全メッセージへ遡って受信ルールを適用する（「今すぐ適用」ボタン）。戻り値は変わったメッセージの件数。
 /// `purge_expired_messages`と同じ理由で`spawn_blocking`に逃がす（1000万件規模だと
 /// 数秒〜数十秒かかりうる重い処理のため）。
 #[tauri::command]

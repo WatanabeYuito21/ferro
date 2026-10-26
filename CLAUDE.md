@@ -96,7 +96,8 @@
   1セッション500件まで。**UIDL非対応のフォールバック経路は対象外**（RETR前にmsg_numと
   uidl（内容ハッシュ）の対応が取れず、安全に特定できないため）。`retention_days`とは独立。
   Dateヘッダーが古いメールは受信直後でも次回syncで削除対象になる（`date_header`基準）。
-- **受信時の自動ラベル付けルール**（`ferro_core::label_rules`/`message_filter`、v0.0.11）:
+- **受信時の自動ラベル付けルール**（`ferro_core::label_rules`/`message_filter`、v0.0.11。
+  v0.0.35で既読にする等の動作も付けられるようになった。下記「受信ルールの動作」参照）:
   「詳細検索機能を付けて、その条件に当てはまるものは受信時に自動でラベル付けできる
   ようにしたい」という要望を受けて追加した。差出人/件名/本文への部分文字列一致と
   添付ファイルの有無を条件に、AND結合（Gmailフィルタと同じ。OR相当が欲しい場合は
@@ -311,6 +312,16 @@
   CLIは`ferro export <id> [-o path]`。既定のファイル名は`suggested_eml_filename`が件名から作る
   （Windowsで使えない文字・制御文字は`_`、予約デバイス名や空になる件名は`message-<id>.eml`。
   別OSへ持っていけるよう全OSでWindowsの規則に揃える）。
+- **受信ルールの動作**（v0.0.35）: 自動ラベル付けルール（`LabelRule`）に`RuleActions`
+  （`mark_read`/`archive`/`star`/`skip_notification`）を足し、`label_name`は空でもよくした
+  （空ならラベルは付けず動作だけ）。ラベルも動作も無いルールは`add`が`NoEffect`で拒む。
+  TOMLは`#[serde(flatten)]`で同じ表に並べ、立てた動作だけを書く（0.0.34以前のファイルも
+  そのまま読める）。判定は従来どおり`matching_rules`の完全一致で、sync時と「今すぐ適用」で
+  同じ`apply_rules`を通す。動作は立てるだけで外さない（`messages::apply_rule_flags`）。
+  「通知しない」は受信時だけ意味があるので、`messages.notify_muted`（migration 0012）に印を
+  残し、`new_mail::since`が数えない。あわせて既読のメールも通知しないようにした
+  （ルールで既読にした定期通知が通知されないように）。`apply_all`の戻り値は「何かが変わった
+  メッセージの件数」に変わった（以前は付与したラベルの数）。
 - **アカウントごとの同期状態**（`db::sync_status`、migration 0011、v0.0.34）: `sync_account_with_limit`は
   中身を`sync_account_inner`に移した薄い包みで、成功・失敗のたびに`account_sync_status`へ記録する
   （どこから同期しても残る。記録に失敗しても同期の結果は変えず`ferro.log`に出すだけ）。失敗は

@@ -692,13 +692,28 @@ fn sync_applies_label_rules_to_newly_fetched_messages() {
     let account = make_account(&conn, port);
 
     let rules = LabelRulesFile {
-        rules: vec![crate::label_rules::LabelRule {
-            label_name: "invoices".to_string(),
-            filter: MessageFilter {
-                subject_contains: Some("invoice".to_string()),
+        rules: vec![
+            crate::label_rules::LabelRule {
+                label_name: "invoices".to_string(),
+                filter: MessageFilter {
+                    subject_contains: Some("invoice".to_string()),
+                    ..Default::default()
+                },
                 ..Default::default()
             },
-        }],
+            crate::label_rules::LabelRule {
+                filter: MessageFilter {
+                    subject_contains: Some("unrelated".to_string()),
+                    ..Default::default()
+                },
+                actions: crate::label_rules::RuleActions {
+                    archive: true,
+                    skip_notification: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ],
     };
 
     sync_account_with_limit(
@@ -723,6 +738,10 @@ fn sync_applies_label_rules_to_newly_fetched_messages() {
     assert_eq!(matching_labels.len(), 1);
     assert_eq!(matching_labels[0].id, label_id);
     assert!(labels::for_message(&conn, unrelated.id).unwrap().is_empty());
+    // ラベル以外の動作も受信時に当たる（アーカイブ・通知しない）。
+    assert!(unrelated.is_archived && !unrelated.is_read);
+    let notified = crate::new_mail::since(&conn, 0, &[], 10).unwrap();
+    assert_eq!(notified.samples.iter().map(|m| m.id).collect::<Vec<_>>(), vec![matching.id]);
 }
 
 /// DELEを受け取ってもQUITが来るまでは確定させず、QUITで初めて`deleted`に
