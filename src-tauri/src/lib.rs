@@ -52,7 +52,14 @@ const BACKGROUND_SYNC_LIMIT: u32 = 200;
 /// 見える原因になっていた（実際に踏んだ罠）。書き込み・変更系
 /// （sync/add_account/remove_account/reload_accounts_config/set_*）は
 /// `write_conn`、それ以外の純粋な読み取り系（list_*/get_message_detail/
-/// save_attachment/search_messages/reindex_all）は`read_conn`を使う。
+/// save_attachment/search_messages）は`read_conn`を使う。
+///
+/// `read_conn`を使う読み取り系コマンドは`#[tauri::command(async)]`にしてある。
+/// Tauriは`async`でない普通のコマンドを**メインスレッド**で実行するため、
+/// ロック待ちが起きるとその間ウィンドウのイベントループごと止まり、アプリ全体が
+/// 「応答なし」になる（検索インデックス再構築が`read_conn`を数分間握りっぱなしに
+/// していた間、一覧取得等がメインスレッドで待たされて実際に固まった）。
+/// 長時間かかる処理は`read_conn`/`write_conn`を長く握らないこと（`reindex_all`参照）。
 struct AppState {
     write_conn: Mutex<Connection>,
     read_conn: Mutex<Connection>,
@@ -261,7 +268,7 @@ fn load_message_and_raw(conn: &Connection, message_id: i64) -> Result<(Message, 
 
 /// 本文（プレーンテキストのみ。HTML本文はタグを剥がしたテキストに変換済み）と
 /// 添付ファイルの一覧を返す。添付の中身はここでは返さず`save_attachment`で個別に取得する。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_message_detail(state: State<AppState>, message_id: i64) -> Result<MessageDetailView, String> {
     let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
     let (message, raw) = load_message_and_raw(&conn, message_id)?;
@@ -362,7 +369,7 @@ async fn set_snoozed(app: AppHandle, message_id: i64, preset: Option<String>) ->
 
 /// `get_message_detail`が返した添付の`index`を指定して、フロント側が
 /// (`@tauri-apps/plugin-dialog`の保存ダイアログで選んだ)`destination_path`に書き出す。
-#[tauri::command]
+#[tauri::command(async)]
 fn save_attachment(
     state: State<AppState>,
     message_id: i64,
@@ -376,7 +383,7 @@ fn save_attachment(
     std::fs::write(&destination_path, bytes).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_accounts(state: State<AppState>) -> Result<Vec<AccountView>, String> {
     let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
     db::accounts::list(&conn)
@@ -398,7 +405,7 @@ fn parse_folder(folder: &str) -> Result<Folder, String> {
 /// フォルダ別（受信箱/スター付き/スヌーズ/アーカイブ/ゴミ箱）の新着順
 /// キーセットページネーション一覧。`account_id`を省略すると全アカウント横断、
 /// `before`で次ページを取得する。
-#[tauri::command]
+#[tauri::command(async)]
 fn list_messages_by_folder(
     state: State<AppState>,
     folder: String,
@@ -414,7 +421,7 @@ fn list_messages_by_folder(
 }
 
 /// 指定ラベルが付いたメッセージの新着順キーセットページネーション一覧。
-#[tauri::command]
+#[tauri::command(async)]
 fn list_messages_by_label(
     state: State<AppState>,
     label_id: i64,
@@ -437,7 +444,7 @@ struct FolderCountsView {
 }
 
 /// サイドバーのフォルダ件数表示用。
-#[tauri::command]
+#[tauri::command(async)]
 fn get_folder_counts(
     state: State<AppState>,
     account_id: Option<i64>,
@@ -455,7 +462,7 @@ fn get_folder_counts(
 }
 
 /// サイドバー表示用のラベル一覧（付与件数付き）。
-#[tauri::command]
+#[tauri::command(async)]
 fn list_labels(state: State<AppState>) -> Result<Vec<LabelWithCountView>, String> {
     let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
     db::labels::list_with_counts(&conn)
@@ -818,7 +825,7 @@ async fn sync_account(
 }
 
 /// 全文検索インデックスを検索し、ヒットしたメッセージをスコア順に返す。
-#[tauri::command]
+#[tauri::command(async)]
 fn search_messages(state: State<AppState>, query: String, limit: usize) -> Result<Vec<MessageView>, String> {
     let ids = state.search_index.search(&query, limit).map_err(|e| e.to_string())?;
     let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
@@ -834,12 +841,17 @@ fn search_messages(state: State<AppState>, query: String, limit: usize) -> Resul
 /// 全メッセージから検索インデックスを作り直す（DB/Maildirから再構築可能な派生キャッシュ）。
 /// `sync_account`と同じ理由（大量メッセージ＋クラッシュ時リトライで長時間化しうる）で
 /// `spawn_blocking`に逃がし、呼び出し元スレッドをブロックしないようにする。
+///
+/// DB接続は`read_conn`/`write_conn`を借りず、この処理専用に新しく開く。全件の再構築は
+/// メールボックスの規模次第で数分かかり、その間共有の接続を握り続けると、一覧表示・
+/// フォルダ件数・本文表示などがロック待ちで止まってアプリ全体が固まる（以前は
+/// `read_conn`を握りっぱなしにしていて実際に固まった）。WALモードなので別接続の
+/// 書き込み（`mark_indexed`/`update_preview`）と`write_conn`側の同期は共存できる。
 #[tauri::command]
 async fn reindex_all(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        // 全メッセージをDBから読むだけ(SQLite側は変更しない)なのでread_connでよい。
-        let conn = state.read_conn.lock().map_err(|e| e.to_string())?;
+        let conn = db::open(&paths::db_path()).map_err(|e| e.to_string())?;
         reindex::reindex_all(&conn, &paths::maildir_dir(), &state.search_index).map_err(|e| e.to_string())
     })
     .await
