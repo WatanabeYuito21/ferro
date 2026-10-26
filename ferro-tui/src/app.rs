@@ -98,6 +98,11 @@ pub struct App {
     /// スヌーズ確認待ち（`z`の後に1/3/7のいずれかを待つ状態）。
     pub awaiting_snooze_choice: bool,
 
+    /// 設定画面のカーソル位置と、開いている入力フォーム・削除の確認（`settings_screen`参照）。
+    pub settings_cursor: usize,
+    pub settings_form: Option<crate::settings_screen::Form>,
+    pub settings_confirm: Option<crate::settings_screen::Confirm>,
+
     pub status: Option<String>,
 }
 
@@ -136,6 +141,9 @@ impl App {
             settings: Settings::default(),
             accounts: Vec::new(),
             awaiting_snooze_choice: false,
+            settings_cursor: 0,
+            settings_form: None,
+            settings_confirm: None,
             status: None,
         };
         app.refresh_all()?;
