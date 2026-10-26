@@ -25,6 +25,7 @@ pub enum BackgroundEvent {
     RetentionPurged { count: usize },
     ManualPurgeFinished { result: Result<usize, String> },
     ReindexFinished { result: Result<usize, String> },
+    OptimizeFinished { result: Result<ferro_core::maintenance::OptimizeReport, String> },
 }
 
 fn now_unix() -> i64 {

@@ -1015,6 +1015,41 @@ fn highlight_terms(query: String) -> Vec<HighlightTermView> {
 }
 
 #[derive(Serialize)]
+struct OptimizeReportView {
+    db_before: u64,
+    db_after: u64,
+    index_before: u64,
+    index_after: u64,
+    freed: u64,
+}
+
+/// DBと検索インデックスを最適化する（設定画面の「今すぐ最適化する」）。同期と同じ
+/// `write_conn`を握るので、その間の同期・メールの操作は待たされる（数秒〜数十秒）。
+#[tauri::command]
+async fn optimize_storage(app: AppHandle) -> Result<OptimizeReportView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        let report = ferro_core::maintenance::optimize(
+            &conn,
+            &paths::db_path(),
+            &state.search_index,
+            &paths::search_index_dir(),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(OptimizeReportView {
+            db_before: report.db_before,
+            db_after: report.db_after,
+            index_before: report.index_before,
+            index_after: report.index_after,
+            freed: report.freed(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
 struct SavedSearchView {
     name: String,
     query: String,
@@ -1785,6 +1820,7 @@ pub fn run() {
             save_message_eml,
             get_message_source,
             list_saved_searches,
+            optimize_storage,
             refresh_unread_badge,
             highlight_terms,
             add_saved_search,
