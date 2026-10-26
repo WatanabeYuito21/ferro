@@ -117,6 +117,30 @@ pub fn set_read(conn: &Connection, id: i64, is_read: bool) -> rusqlite::Result<(
     Ok(())
 }
 
+/// 受信ルールの動作（既読にする・アーカイブする・スターを付ける）を当てる。立てるだけで
+/// 外すことはしない。実際に何か変わったらtrue。
+pub fn apply_rule_flags(
+    conn: &Connection,
+    id: i64,
+    mark_read: bool,
+    archive: bool,
+    star: bool,
+) -> rusqlite::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE messages
+         SET is_read = MAX(is_read, ?2), is_archived = MAX(is_archived, ?3), is_flagged = MAX(is_flagged, ?4)
+         WHERE id = ?1 AND ((?2 AND is_read = 0) OR (?3 AND is_archived = 0) OR (?4 AND is_flagged = 0))",
+        params![id, mark_read, archive, star],
+    )?;
+    Ok(changed > 0)
+}
+
+/// 受信ルールの「通知しない」が当たった印を付ける（`new_mail::since`が数えない）。
+pub fn mute_notification(conn: &Connection, id: i64) -> rusqlite::Result<()> {
+    conn.execute("UPDATE messages SET notify_muted = 1 WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 pub fn set_flagged(conn: &Connection, id: i64, is_flagged: bool) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE messages SET is_flagged = ?1 WHERE id = ?2",

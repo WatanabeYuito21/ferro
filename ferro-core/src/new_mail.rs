@@ -3,7 +3,8 @@
 //! 同期の前に`messages`の最大idを覚えておき、同期の後にそれより大きいidの
 //! メッセージを新着とみなす（`SyncSummary`は件数しか持たないため）。`labels`を
 //! 指定すると、そのどれかのラベルが付いた新着だけを数える（受信時の自動ラベル付け
-//! ルールと組み合わせて「重要なアラートだけ通知する」ために使う）。
+//! ルールと組み合わせて「重要なアラートだけ通知する」ために使う）。既読のもの（受信ルールの
+//! 「既読にする」が当たった等）と、受信ルールの「通知しない」が当たったものは数えない。
 
 use rusqlite::ToSql;
 
@@ -25,14 +26,14 @@ pub struct NewMail {
 
 /// `after_id`より後に受信したメッセージのうち、通知の対象になるもの。
 /// `labels`が空なら全部、そうでなければそのどれかのラベル（名前、大文字小文字を
-/// 区別しない）が付いたものだけ。削除済みは除く。
+/// 区別しない）が付いたものだけ。削除済み・既読・通知しない印付き（`notify_muted`）は除く。
 pub fn since(
     conn: &Connection,
     after_id: i64,
     labels: &[String],
     sample_limit: usize,
 ) -> rusqlite::Result<NewMail> {
-    let mut filter = String::from("id > ? AND is_deleted = 0");
+    let mut filter = String::from("id > ? AND is_deleted = 0 AND is_read = 0 AND notify_muted = 0");
     let mut params: Vec<Box<dyn ToSql>> = vec![Box::new(after_id)];
     if !labels.is_empty() {
         let placeholders = vec!["?"; labels.len()].join(", ");
@@ -145,6 +146,20 @@ mod tests {
 
         messages::set_deleted(&conn, a, true).unwrap();
         assert_eq!(since(&conn, before, &[], 5).unwrap().count, 1);
+    }
+
+    #[test]
+    fn read_and_muted_messages_are_not_notified() {
+        let conn = open_in_memory().unwrap();
+        let read = insert(&conn, "1", "read by a rule");
+        let muted = insert(&conn, "2", "muted by a rule");
+        let normal = insert(&conn, "3", "normal");
+        messages::set_read(&conn, read, true).unwrap();
+        messages::mute_notification(&conn, muted).unwrap();
+
+        let new_mail = since(&conn, 0, &[], 5).unwrap();
+        assert_eq!(new_mail.count, 1);
+        assert_eq!(new_mail.samples[0].id, normal);
     }
 
     #[test]

@@ -21,6 +21,10 @@
   let bodyContains = $state('')
   // ''=問わない, 'true'=添付あり, 'false'=添付なし
   let hasAttachment = $state('')
+  let markRead = $state(false)
+  let archive = $state(false)
+  let star = $state(false)
+  let skipNotification = $state(false)
   let formError = $state('')
   let submitting = $state(false)
   let openConfigError = $state('')
@@ -37,6 +41,15 @@
     if (rule.has_attachment === true) parts.push('添付あり')
     if (rule.has_attachment === false) parts.push('添付なし')
     return parts.length > 0 ? parts.join(' かつ ') : '(条件なし)'
+  }
+
+  function describeActions(rule) {
+    const parts = []
+    if (rule.mark_read) parts.push('既読にする')
+    if (rule.archive) parts.push('アーカイブ')
+    if (rule.star) parts.push('スター')
+    if (rule.skip_notification) parts.push('通知しない')
+    return parts.join('・')
   }
 
   async function openConfigFile() {
@@ -71,11 +84,19 @@
         subjectContains: subjectContains.trim() || undefined,
         bodyContains: bodyContains.trim() || undefined,
         hasAttachment: hasAttachment === '' ? undefined : hasAttachment === 'true',
+        markRead,
+        archive,
+        star,
+        skipNotification,
       })
       fromContains = ''
       subjectContains = ''
       bodyContains = ''
       hasAttachment = ''
+      markRead = false
+      archive = false
+      star = false
+      skipNotification = false
     } catch (e) {
       formError = String(e)
     } finally {
@@ -85,8 +106,9 @@
 
   // From/Subject/Body/添付有無のいずれか1つも指定していない条件は送信できないように
   // する（Rust側の`MessageFilter::is_empty`と同じ判定をフォームでも先に行う）。
+  // ラベルか動作のどちらかも必要（Rust側の`LabelRule::has_effect`と同じ判定）。
   let canSubmit = $derived(
-    labelName !== '' &&
+    (labelName !== '' || markRead || archive || star || skipNotification) &&
       (fromContains.trim() !== '' ||
         subjectContains.trim() !== '' ||
         bodyContains.trim() !== '' ||
@@ -98,7 +120,7 @@
     applyStatus = '適用中…'
     try {
       const applied = await onApplyNow()
-      applyStatus = `${applied}件のメッセージにラベルを付与しました`
+      applyStatus = `${applied}件のメッセージに適用しました`
     } catch (e) {
       applyStatus = `エラー: ${e}`
     } finally {
@@ -109,49 +131,55 @@
 
 <div class="label-rules-view">
   <p class="desc">
-    差出人・件名・本文・添付の有無を条件に、受信時に自動でラベルを付与します。1つのルール内で
-    指定した条件はすべて満たした場合にのみ付与されます（Gmailのフィルタと同じ考え方）。
-    「いずれかを満たす」にしたい場合は、同じラベルを指すルールを複数作ってください。
+    差出人・件名・本文・添付の有無を条件に、受信時に自動でラベルを付けたり、既読にする・
+    アーカイブする・スターを付ける・通知しない、を行います。1つのルール内で指定した条件は
+    すべて満たした場合にのみ当たります（Gmailのフィルタと同じ考え方）。「いずれかを満たす」に
+    したい場合は、同じ動作のルールを複数作ってください。既読にしたメールは新着通知も出ません。
   </p>
 
-  {#if labels.length === 0}
-    <p class="empty">先にラベルを作成してください（サイドバーの「ラベル」から追加できます）。</p>
-  {:else}
-    <form class="add-form" onsubmit={(e) => { e.preventDefault(); handleSubmit() }}>
-      <label class="field">
-        <span>ラベル</span>
-        <select bind:value={labelName} required>
-          <option value="" disabled>選択してください</option>
-          {#each labels as label (label.id)}
-            <option value={label.name}>{label.name}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="field">
-        <span>差出人</span>
-        <input bind:value={fromContains} placeholder="例: invoice@" />
-      </label>
-      <label class="field">
-        <span>件名</span>
-        <input bind:value={subjectContains} placeholder="例: 領収書" />
-      </label>
-      <label class="field">
-        <span>本文</span>
-        <input bind:value={bodyContains} placeholder="例: critical" />
-      </label>
-      <label class="field">
-        <span>添付</span>
-        <select bind:value={hasAttachment}>
-          <option value="">問わない</option>
-          <option value="true">あり</option>
-          <option value="false">なし</option>
-        </select>
-      </label>
-      <button type="submit" class="primary-button" disabled={submitting || !canSubmit}>
-        ルールを追加
-      </button>
-    </form>
-  {/if}
+  <form class="add-form" onsubmit={(e) => { e.preventDefault(); handleSubmit() }}>
+    <label class="field">
+      <span>ラベル</span>
+      <select bind:value={labelName}>
+        <option value="">付けない</option>
+        {#each labels as label (label.id)}
+          <option value={label.name}>{label.name}</option>
+        {/each}
+      </select>
+    </label>
+    <label class="field">
+      <span>差出人</span>
+      <input bind:value={fromContains} placeholder="例: invoice@" />
+    </label>
+    <label class="field">
+      <span>件名</span>
+      <input bind:value={subjectContains} placeholder="例: 領収書" />
+    </label>
+    <label class="field">
+      <span>本文</span>
+      <input bind:value={bodyContains} placeholder="例: critical" />
+    </label>
+    <label class="field">
+      <span>添付</span>
+      <select bind:value={hasAttachment}>
+        <option value="">問わない</option>
+        <option value="true">あり</option>
+        <option value="false">なし</option>
+      </select>
+    </label>
+    <div class="field">
+      <span>動作</span>
+      <div class="actions">
+        <label><input type="checkbox" bind:checked={markRead} /> 既読にする</label>
+        <label><input type="checkbox" bind:checked={archive} /> アーカイブする</label>
+        <label><input type="checkbox" bind:checked={star} /> スターを付ける</label>
+        <label><input type="checkbox" bind:checked={skipNotification} /> 通知しない</label>
+      </div>
+    </div>
+    <button type="submit" class="primary-button" disabled={submitting || !canSubmit}>
+      ルールを追加
+    </button>
+  </form>
   {#if formError}
     <p class="error">{formError}</p>
   {/if}
@@ -171,13 +199,18 @@
   {/if}
 
   {#if rules.length === 0}
-    <p class="empty">自動ラベル付けルールがまだありません。</p>
+    <p class="empty">受信ルールがまだありません。</p>
   {:else}
     <ul class="rule-list">
       {#each rules as rule, index (index)}
         <li class="rule-row">
-          <span class="label-name">{rule.label_name}</span>
-          <span class="filter">{describeFilter(rule)}</span>
+          {#if rule.label_name}
+            <span class="label-name">{rule.label_name}</span>
+          {/if}
+          <span class="filter">
+            {describeFilter(rule)}
+            {#if describeActions(rule)}<span class="rule-actions">→ {describeActions(rule)}</span>{/if}
+          </span>
           <button type="button" class="danger" onclick={() => onRemove(index)}>削除</button>
         </li>
       {/each}
@@ -187,7 +220,7 @@
       <button type="button" class="action-button" onclick={applyNow} disabled={applying}>
         今すぐ適用
       </button>
-      <span class="apply-desc">既存の受信済みメールにも遡ってルールを適用します。</span>
+      <span class="apply-desc">既存の受信済みメールにも遡ってルールを適用します（ラベル・既読・アーカイブ・スター）。</span>
       {#if applyStatus}
         <p class="status">{applyStatus}</p>
       {/if}
@@ -196,6 +229,24 @@
 </div>
 
 <style>
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    font-size: 12.5px;
+  }
+  .actions label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .field .actions input {
+    padding: 0;
+  }
+  .rule-actions {
+    margin-left: 6px;
+    color: var(--accent);
+  }
   .label-rules-view {
     max-width: 720px;
   }

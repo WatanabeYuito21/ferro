@@ -603,12 +603,11 @@ fn store_fetched_message(
     let subject = parsed.headers.subject.as_deref().unwrap_or("");
     let body = parsed.body.as_deref().unwrap_or("");
 
-    // 受信時の自動ラベル付け（`label_rules`のドキュメント参照）。バックフィル
+    // 受信ルール（ラベル付け・既読にする等。`label_rules`のドキュメント参照）。バックフィル
     // （`label_rules::apply_all`）と同じ完全一致ロジックで、この場で1件だけ判定する。
-    let matched_labels =
-        label_rules::matching_label_names(label_rules, subject, &from, body, attachment_count > 0);
-    if !matched_labels.is_empty() {
-        label_rules::apply_matching_labels(conn, id, &matched_labels)?;
+    let matched = label_rules::matching_rules(label_rules, subject, &from, body, attachment_count > 0);
+    if !matched.is_empty() {
+        label_rules::apply_rules(conn, id, &matched, true)?;
     }
 
     Ok(Some(PendingIndex {

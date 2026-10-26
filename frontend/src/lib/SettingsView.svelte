@@ -370,8 +370,8 @@
       rows: [],
     },
     labelRules: {
-      title: '自動ラベル付けルール',
-      keywords: 'label rules ラベル フィルタ 振り分け 受信時 label_rules.toml',
+      title: '受信ルール（自動ラベル付け・振り分け）',
+      keywords: 'label rules ラベル フィルタ 振り分け 受信時 既読 アーカイブ スター 通知しない label_rules.toml',
       rows: [],
     },
   }

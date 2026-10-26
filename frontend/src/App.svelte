@@ -456,14 +456,8 @@
     labelRules = await invoke('get_label_rules')
   }
 
-  async function addLabelRule({ labelName, fromContains, subjectContains, bodyContains, hasAttachment }) {
-    labelRules = await invoke('add_label_rule', {
-      labelName,
-      fromContains,
-      subjectContains,
-      bodyContains,
-      hasAttachment,
-    })
+  async function addLabelRule(rule) {
+    labelRules = await invoke('add_label_rule', rule)
   }
 
   async function removeLabelRule(index) {

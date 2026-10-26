@@ -65,6 +65,15 @@ pub fn find_by_name(conn: &Connection, name: &str) -> rusqlite::Result<Option<La
 }
 
 /// メッセージへのラベル付与/解除。
+/// ラベルを付ける。既に付いていればfalse（受信ルールの「今すぐ適用」で変わった件数を数える用）。
+pub fn add_to_message(conn: &Connection, message_id: i64, label_id: i64) -> rusqlite::Result<bool> {
+    let inserted = conn.execute(
+        "INSERT OR IGNORE INTO message_labels (message_id, label_id) VALUES (?1, ?2)",
+        params![message_id, label_id],
+    )?;
+    Ok(inserted > 0)
+}
+
 pub fn set_on_message(
     conn: &Connection,
     message_id: i64,
