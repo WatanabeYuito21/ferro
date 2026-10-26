@@ -1149,6 +1149,9 @@ fn run_background_sync_once(app_handle: &AppHandle) {
 /// クリックは`navigate`イベントとしてフロントへ通知し、`App.svelte`側で画面を切り替える。
 const NAV_MESSAGES_ID: &str = "nav-messages";
 const NAV_SETTINGS_ID: &str = "nav-settings";
+/// 更新確認自体はフロント側(`tauri-plugin-updater`のJS API)で行うため、
+/// ここでは`check-for-update`イベントを投げるだけ（`frontend/src/lib/updater.svelte.js`参照）。
+const CHECK_FOR_UPDATE_ID: &str = "check-for-update";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1220,9 +1223,13 @@ pub fn run() {
 
             let messages_item = MenuItemBuilder::with_id(NAV_MESSAGES_ID, "Messages").build(app)?;
             let settings_item = MenuItemBuilder::with_id(NAV_SETTINGS_ID, "Settings…").build(app)?;
+            let check_update_item =
+                MenuItemBuilder::with_id(CHECK_FOR_UPDATE_ID, "Check for Updates…").build(app)?;
             let view_menu = SubmenuBuilder::new(app, "View")
                 .item(&messages_item)
                 .item(&settings_item)
+                .separator()
+                .item(&check_update_item)
                 .build()?;
             let menu = MenuBuilder::new(app).item(&view_menu).build()?;
             app.set_menu(menu)?;
@@ -1230,6 +1237,10 @@ pub fn run() {
             Ok(())
         })
         .on_menu_event(|app_handle, event| {
+            if event.id().as_ref() == CHECK_FOR_UPDATE_ID {
+                let _ = app_handle.emit("check-for-update", ());
+                return;
+            }
             let target = match event.id().as_ref() {
                 NAV_MESSAGES_ID => Some("messages"),
                 NAV_SETTINGS_ID => Some("settings"),

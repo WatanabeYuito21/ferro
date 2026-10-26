@@ -281,8 +281,12 @@
   ※ GUI等がTantivyインデックスを開いている間はCLIは起動できない
   （上記ロックの項参照）ため、`ferro dedupe`はGUI/TUIを閉じてから実行する。
 - **自動アップデート**（v0.0.17、GUIのみ）: `tauri-plugin-updater`＋`tauri-plugin-process`
-  （再起動用）。設定画面の「更新を確認」ボタンを押したときだけ`check()`→
-  `downloadAndInstall()`→`relaunch()`を行う（起動時の自動確認はしない）。更新元は
+  （再起動用）。設定画面の「更新を確認」ボタン、またはメニューバーの
+  View > Check for Updates…（v0.0.18。Rust側は`check-for-update`イベントを投げるだけで、
+  フロントが設定画面の「アップデート」セクションへ移動してから確認を始める）を押したときだけ
+  `check()`→`downloadAndInstall()`→`relaunch()`を行う（起動時の自動確認はしない）。
+  進捗状態は画面切り替えで作り直される`SettingsView`ではなく
+  `frontend/src/lib/updater.svelte.js`のモジュール状態に持たせている。更新元は
   `https://github.com/WatanabeYuito21/ferro/releases/latest/download/latest.json`
   （publicリポジトリなので認証不要）。`release.yml`のreleaseジョブが各プラットフォームの
   `.sig`（`createUpdaterArtifacts: true`でビルド時に生成）から`latest.json`を`jq`で組み立てて
