@@ -6,10 +6,18 @@
   import { untrack } from 'svelte'
   import { matchColor } from './colorRules.js'
   import { formatDate } from './formatDate.js'
+  import { applyPatch, neighborId } from './messageView.js'
 
   // labelIdが指定されているときはfolderを無視してラベル一覧を表示する
   // （サイドバーはフォルダかラベルのどちらか一方を選ぶ設計）。
-  let { folder = 'inbox', labelId = null, colorRules = [], onSelect = () => {} } = $props()
+  // `selectedId`は詳細表示中のメッセージ（行をハイライトし、キーボードの上下移動の起点にする）。
+  let {
+    folder = 'inbox',
+    labelId = null,
+    selectedId = null,
+    colorRules = [],
+    onSelect = () => {},
+  } = $props()
 
   const ROW_HEIGHT = 68
   const OVERSCAN_ROWS = 5
@@ -23,6 +31,7 @@
   let loadError = $state('')
   let scrollTop = $state(0)
   let viewportHeight = $state(0)
+  let viewport = $state(null)
 
   async function loadMore() {
     if (loading || exhausted) return
@@ -73,6 +82,43 @@
     untrack(() => reset())
   })
 
+  function currentView() {
+    return labelId != null ? { kind: 'label', labelId } : { kind: 'folder', folder }
+  }
+
+  // 行が見える位置までスクロールする（キーボードで選択を動かした時用）。
+  function scrollToIndex(index) {
+    if (!viewport) return
+    const top = index * ROW_HEIGHT
+    if (top < viewport.scrollTop) {
+      viewport.scrollTop = top
+    } else if (top + ROW_HEIGHT > viewport.scrollTop + viewportHeight) {
+      viewport.scrollTop = top + ROW_HEIGHT - viewportHeight
+    }
+  }
+
+  // 選択中の行から`delta`行動いた先のidを返す（App.svelteのキーボード操作から呼ぶ）。
+  // 末尾に近づいたら次のページも読み込む。
+  export function moveSelection(delta) {
+    const id = neighborId(items, selectedId, delta)
+    if (id == null) return null
+    const index = items.findIndex((m) => m.id === id)
+    scrollToIndex(index)
+    if (items.length - index < 10) loadMore()
+    return id
+  }
+
+  // 操作結果をその行に反映する（`messageView.js`参照）。表示中のフォルダ/ラベルから
+  // 外れた行は取り除き、代わりに選ぶべき行のidを返す。
+  export function applyChange(id, patch) {
+    const result = applyPatch(items, id, patch, currentView())
+    items = result.items
+    if (result.removed && result.nextId != null) {
+      scrollToIndex(items.findIndex((m) => m.id === result.nextId))
+    }
+    return { removed: result.removed, nextId: result.nextId }
+  }
+
   function onScroll(event) {
     scrollTop = event.target.scrollTop
     const totalHeight = items.length * ROW_HEIGHT
@@ -91,7 +137,7 @@
 
 </script>
 
-<div class="viewport" bind:clientHeight={viewportHeight} onscroll={onScroll}>
+<div class="viewport" bind:this={viewport} bind:clientHeight={viewportHeight} onscroll={onScroll}>
   <div class="spacer" style="height: {totalHeight}px">
     <div class="window" style="transform: translateY({topOffset}px)">
       {#each visibleItems as message (message.id)}
@@ -99,6 +145,7 @@
         <div
           class="row"
           class:unread={!message.is_read}
+          class:selected={message.id === selectedId}
           style="height: {ROW_HEIGHT}px"
           role="button"
           tabindex="0"
@@ -176,6 +223,10 @@
   }
   .row:hover {
     background: var(--surface-muted);
+  }
+  .row.selected {
+    background: var(--accent-soft-bg);
+    box-shadow: inset 3px 0 0 var(--accent);
   }
   .line1 {
     display: flex;

@@ -231,6 +231,19 @@
   `ferro-tui/src/background.rs`参照）。設定画面は現状「表示のみ」（トグル/数値の
   編集、色分けルールの追加/削除、アカウント管理フォームは未実装。フォーム入力が
   要るこれらは今後のフェーズで対応予定）。
+- **GUIのキーボード操作**（v0.0.27）: `App.svelte`の`handleKeydown`（`<svelte:window>`）に
+  まとめ、一覧は`KeyboardHelp.svelte`（`?`で表示）。両方を揃えること。入力欄にフォーカスが
+  ある間はEsc（入力欄から抜ける）以外は無視、ボタンにフォーカスがある時のEnterは本来の動作に
+  任せる。本文に対する操作（`e`/`s`/`u`/`#`/`b`/`l`）は`MessageDetail`が`export`している関数を
+  `bind:this`経由で呼ぶ（ボタンと同じ経路にして、本文側の表示状態とずれないようにする）。
+  あわせて、1件の操作のたびに一覧を最初のページから作り直していた（スクロール位置が失われ、
+  キーボードで次々に処理できない）のをやめ、`MessageDetail`は`onChanged(id, patch)`で
+  変わった項目だけを通知し、`MessageList.applyChange`/`messageView.js`の`applyPatch`が
+  その行に当てる。表示中のフォルダ/ラベルの条件（`belongsToView`。`db::messages`の
+  `list_by_folder`/`list_by_label`のWHERE句と同じ判定。変えるときは両方を揃える）から
+  外れた行は取り除き、次の行（末尾なら前の行）を開く。削除・スヌーズ後に本文を閉じていた
+  動作も、この「次へ進む」に置き換えた。一覧の再読み込み（`messageListRefreshToken`）は
+  「今すぐ適用」のような一括変更でだけ使う。
 - **.eml書き出し**（`ferro_core::mail::export`、v0.0.26）: Maildirのファイル自体が既に
   RFC 5322の生メールなので、変換はせずバイト列をそのまま書き出す。GUIは本文表示の
   「.emlとして保存…」（`save_message_eml`コマンド＋`tauri-plugin-dialog`の保存ダイアログ）、
