@@ -164,7 +164,7 @@ impl App {
         };
         app.refresh_all()?;
         app.load_more()?;
-        app.load_selected_detail()?;
+        app.cursor_changed()?;
         Ok(app)
     }
 
@@ -234,7 +234,7 @@ impl App {
         self.search_mode = false;
         self.search_results = None;
         self.load_more()?;
-        self.load_selected_detail()?;
+        self.cursor_changed()?;
         Ok(())
     }
 
@@ -249,7 +249,17 @@ impl App {
         if self.search_results.is_none() && len.saturating_sub(new_cursor) <= PREFETCH_ROWS {
             self.load_more()?;
         }
-        self.load_selected_detail()?;
+        self.cursor_changed()
+    }
+
+    /// カーソルが動いた後に呼ぶ。`open_on_select`（既定オン）なら本文を読み込み、オフなら
+    /// 本文を閉じる（Enterで`load_selected_detail`を呼ぶまで開かない）。
+    pub fn cursor_changed(&mut self) -> anyhow::Result<()> {
+        if self.settings.open_on_select {
+            return self.load_selected_detail();
+        }
+        self.read_delay_deadline = None;
+        self.detail = None;
         Ok(())
     }
 
@@ -533,7 +543,7 @@ impl App {
         if self.search_results.is_none() {
             return Ok(());
         }
-        self.load_selected_detail()
+        self.cursor_changed()
     }
 
     /// 保存した検索（`saved_searches`の`index`番目）を開く。

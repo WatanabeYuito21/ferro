@@ -10,7 +10,9 @@
 
   // labelIdが指定されているときはfolderを無視してラベル一覧を表示する
   // （サイドバーはフォルダかラベルのどちらか一方を選ぶ設計）。
-  // `selectedId`は詳細表示中のメッセージ（行をハイライトし、キーボードの上下移動の起点にする）。
+  // `selectedId`は選んでいるメッセージ（行をハイライトし、キーボードの上下移動の起点にする）。
+  // `onSelect`は選んだ時、`onOpen`は本文を開く操作（Enter・ダブルクリック）をした時に呼ぶ
+  // （「選択しただけで本文を開く」設定のときは、App.svelte側で選ぶと同時に開く）。
   // `checkedIds`/`checkAnchor`は複数選択（一括操作用）の状態で、App.svelteが持つ
   // （`messageView.js`の`clickSelection`参照）。変わったら`onCheck`で知らせる。
   let {
@@ -21,6 +23,7 @@
     checkAnchor = null,
     colorRules = [],
     onSelect = () => {},
+    onOpen = () => {},
     onCheck = () => {},
   } = $props()
 
@@ -172,7 +175,8 @@
           role="button"
           tabindex="0"
           onclick={(e) => onRowClick(message.id, e)}
-          onkeydown={(e) => e.key === 'Enter' && onSelect(message.id)}
+          ondblclick={(e) => !(e.shiftKey || e.ctrlKey || e.metaKey) && onOpen(message.id)}
+          onkeydown={(e) => e.key === 'Enter' && onOpen(selectedId ?? message.id)}
         >
           <div class="line1">
             <input

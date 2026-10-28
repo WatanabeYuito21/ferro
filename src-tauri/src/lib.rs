@@ -711,6 +711,7 @@ struct SettingsView {
     notify_labels: Vec<String>,
     close_to_tray: bool,
     show_unread_badge: bool,
+    open_on_select: bool,
 }
 
 impl From<Settings> for SettingsView {
@@ -731,6 +732,7 @@ impl From<Settings> for SettingsView {
             notify_labels: s.notify_labels,
             close_to_tray: s.close_to_tray,
             show_unread_badge: s.show_unread_badge,
+            open_on_select: s.open_on_select,
         }
     }
 }
@@ -753,6 +755,7 @@ impl From<SettingsView> for Settings {
             notify_labels: s.notify_labels,
             close_to_tray: s.close_to_tray,
             show_unread_badge: s.show_unread_badge,
+            open_on_select: s.open_on_select,
         }
     }
 }
