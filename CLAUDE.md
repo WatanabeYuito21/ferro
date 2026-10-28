@@ -336,6 +336,15 @@
   （0009の`idx_messages_unread`では行を読みに行くため実データで0.3秒→0.003秒）。受信箱の条件を
   変えるときは`append_folder_condition`・このクエリ・インデックスの3つを揃えること。
   `Settings::show_unread_badge`（既定オン）でオフにできる。
+- **選択と本文を開くことの分離**（v0.0.42）: `Settings::open_on_select`（既定オン＝従来どおり
+  選ぶと開く）。GUIの`App.svelte`は選んでいる行`selectedMessageId`と本文を開いているか
+  `detailOpen`を分け、選択は`selectMessage`、開くのは`openMessage`（Enter/o/ダブルクリック/
+  スレッド一覧）、閉じるのは`closeDetail`を通す（直接`selectedMessageId`へ代入しないこと）。
+  オフのときは選択を動かすと本文を閉じる（本文はいつも選んでいる行のもの、という不変条件を
+  保つため。キーボードの`e`/`s`/`u`等が本文と別の行に効く食い違いを作らない）。本文を開かずに
+  選んでいる行への`e`/`s`/`u`/`#`は`runOnSelected`（`bulk_update`に1件だけ渡す）。行のEnterは
+  フォーカスのある行ではなく選んでいる行を開く（`j`/`k`ではフォーカスが動かないため）。
+  TUIは`App::cursor_changed`がカーソル移動後に本文を読むか閉じるかを決め、`Enter`で開く。
 - **サイドバーの折りたたみ**（v0.0.41）: GUIはサイドバー上端の「«」か`[`キーで、開く「»」と
   設定の⚙だけの細い帯にする。状態は設定ファイルではなくlocalStorage（`ferro.sidebarCollapsed`。
   この端末だけの見た目の好みのため。更新確認の時刻と同じ扱い）。`[`は設定画面でも効く。

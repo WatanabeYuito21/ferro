@@ -87,7 +87,7 @@ fn handle_messages_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
         // 検索結果を出している間のEscは、検索をやめて元の一覧に戻る。
         KeyCode::Esc if app.search_results.is_some() => {
             app.cancel_search();
-            app.load_selected_detail()?;
+            app.cursor_changed()?;
             return Ok(());
         }
         KeyCode::Char('[') => {
@@ -163,6 +163,13 @@ fn handle_list_or_detail_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()>
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => app.move_list_cursor(-1)?,
         KeyCode::Down | KeyCode::Char('j') => app.move_list_cursor(1)?,
+        // 「選択しただけで本文を開く」がオフのときに本文を開く・閉じる（オンなら開き直すだけ）。
+        KeyCode::Enter => app.load_selected_detail()?,
+        KeyCode::Esc => {
+            if !app.settings.open_on_select {
+                app.cursor_changed()?;
+            }
+        }
         KeyCode::Char('r') => {
             if let Some(m) = app.current_list().get(app.list_cursor).cloned() {
                 app.set_read(m.id, !m.is_read)?;
@@ -216,6 +223,61 @@ mod tests {
         assert!(app.show_sidebar);
         handle_key(&mut app, key(KeyCode::Tab)).unwrap();
         assert_eq!(app.focus, Pane::Sidebar);
+
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn without_open_on_select_the_cursor_moves_without_opening_until_enter() {
+        let dir = std::env::temp_dir().join(format!("ferro-tui-open-test-{}", std::process::id()));
+        let conn = Arc::new(Mutex::new(db::open(std::path::Path::new(":memory:")).unwrap()));
+        {
+            let c = conn.lock().unwrap();
+            let account_id = db::accounts::insert(
+                &c,
+                &db::accounts::NewAccount { name: "t", host: "h", port: 110, username: "u", use_tls: false },
+            )
+            .unwrap();
+            for (uidl, date) in [("a", 2), ("b", 1)] {
+                db::messages::insert_new(
+                    &c,
+                    &db::messages::NewMessage {
+                        account_id,
+                        uidl,
+                        message_id_header: None,
+                        subject: Some(uidl),
+                        from_name: None,
+                        from_addr: None,
+                        to_addr: None,
+                        date_header: date,
+                        size_bytes: 1,
+                        attachment_count: 0,
+                        preview: None,
+                    },
+                )
+                .unwrap();
+            }
+        }
+        let index = Arc::new(SearchIndex::open_or_create(&dir).unwrap());
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(Arc::clone(&conn), conn, index, rx, tx).unwrap();
+        app.settings.open_on_select = false;
+        app.settings.mark_read_delay = true;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        handle_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(app.list_cursor, 1);
+        assert!(app.detail.is_none());
+        handle_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().message.subject.as_deref(), Some("b"));
+        handle_key(&mut app, key(KeyCode::Char('k'))).unwrap();
+        assert!(app.detail.is_none());
+        assert!(app.read_delay_deadline.is_none(), "moving away must not mark anything read");
+
+        app.settings.open_on_select = true;
+        handle_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(app.detail.as_ref().unwrap().message.subject.as_deref(), Some("b"));
 
         drop(app);
         let _ = std::fs::remove_dir_all(&dir);
