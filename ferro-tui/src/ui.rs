@@ -302,7 +302,7 @@ fn render_status_bar(f: &mut Frame, app: &App, area: Rect) {
     let text = app
         .status
         .clone()
-        .unwrap_or_else(|| "Tab:ペイン切替 j/k:移動 Enter:選択 /:検索 S:同期 r/s/a/d/z:既読/スター/アーカイブ/削除/スヌーズ ,:設定 ?:ヘルプ q:終了".to_string());
+        .unwrap_or_else(|| "Tab:ペイン切替 j/k:移動 Enter:選択 /:検索 S:同期 r/s/a/d/z:既読/スター/アーカイブ/削除/スヌーズ R:すべて既読 ,:設定 ?:ヘルプ q:終了".to_string());
     f.render_widget(Paragraph::new(text), area);
 }
 
@@ -322,6 +322,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from("a                 アーカイブ切替"),
         Line::from("d                 削除（ゴミ箱へ）/復元"),
         Line::from("z → 1/3/7         スヌーズ（1日後/3日後/1週間後）"),
+        Line::from("R → y             表示中の未読をすべて既読にする"),
         Line::from("H                 本文 / 生のヘッダーの表示切替"),
         Line::from("S                 全アカウントを今すぐ同期"),
         Line::from(",                 設定画面の表示切替（設定はj/kで選んでEnterで変更）"),
