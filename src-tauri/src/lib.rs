@@ -541,6 +541,25 @@ async fn bulk_update(app: AppHandle, message_ids: Vec<i64>, action: BulkActionIn
     .map_err(|e| e.to_string())?
 }
 
+/// 表示中のフォルダ（`folder`）かラベル（`label_id`。こちらが優先）の未読をすべて既読にする
+/// （「すべて既読にする」）。既読にした件数を返す。検索結果のときはフロントが`bulk_update`を使う。
+#[tauri::command]
+async fn mark_all_read(app: AppHandle, folder: Option<String>, label_id: Option<i64>) -> Result<usize, String> {
+    let folder = folder.as_deref().map(parse_folder).transpose()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let conn = state.write_conn.lock().map_err(|e| e.to_string())?;
+        match (label_id, folder) {
+            (Some(label_id), _) => db::messages::mark_label_read(&conn, label_id),
+            (None, Some(folder)) => db::messages::mark_folder_read(&conn, folder, now_unix()),
+            (None, None) => return Err("folder or label_id is required".to_string()),
+        }
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// `get_message_detail`が返した添付の`index`を指定して、フロント側が
 /// (`@tauri-apps/plugin-dialog`の保存ダイアログで選んだ)`destination_path`に書き出す。
 #[tauri::command(async)]
@@ -1849,6 +1868,7 @@ pub fn run() {
             set_archived,
             set_snoozed,
             bulk_update,
+            mark_all_read,
             get_folder_counts,
             list_labels,
             create_label,

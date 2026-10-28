@@ -132,6 +132,12 @@
     return items
   }
 
+  // 「すべて既読にする」の後、読み込み済みの行を既読の表示にする（一覧は作り直さない。
+  // まだ読み込んでいない行はDBから既読で届く）。
+  export function markAllReadLocally() {
+    items = items.map((m) => (m.is_read ? m : { ...m, is_read: true }))
+  }
+
   // 操作結果をその行に反映する（`messageView.js`参照）。表示中のフォルダ/ラベルから
   // 外れた行は取り除き、代わりに選ぶべき行のidを返す。
   export function applyChange(id, patch) {

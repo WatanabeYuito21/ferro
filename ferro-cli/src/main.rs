@@ -70,12 +70,16 @@ enum Command {
     /// レイテンシを計測する。本番のDB/Maildir/検索インデックスには一切触れず、
     /// $TMPDIR/ferro-bench配下に専用データを生成する
     Bench { count: u64 },
-    /// 既読/未読を設定する
+    /// 既読/未読を設定する（--allで受信箱の未読をすべて既読にする）
     Read {
-        message_id: i64,
+        #[arg(required_unless_present = "all")]
+        message_id: Option<i64>,
         /// 指定すると未読に戻す（省略時は既読にする）
         #[arg(long)]
         unread: bool,
+        /// 受信箱の未読をすべて既読にする
+        #[arg(long, conflicts_with_all = ["message_id", "unread"])]
+        all: bool,
     },
     /// フラグを立てる/外す
     Flag {
@@ -230,9 +234,17 @@ fn main() -> anyhow::Result<()> {
         }
         Command::Dedupe { apply } => run_dedupe_command(&conn, &search_index, apply)?,
         Command::Bench { count } => bench::run(count)?,
-        Command::Read { message_id, unread } => {
-            messages::set_read(&conn, message_id, !unread)?;
-            println!("message #{message_id} marked as {}.", if unread { "unread" } else { "read" });
+        Command::Read { message_id, unread, all } => {
+            if all {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as i64);
+                let count = messages::mark_folder_read(&conn, messages::Folder::Inbox, now)?;
+                println!("marked {count} message(s) in the inbox as read.");
+            } else if let Some(message_id) = message_id {
+                messages::set_read(&conn, message_id, !unread)?;
+                println!("message #{message_id} marked as {}.", if unread { "unread" } else { "read" });
+            }
         }
         Command::Flag { message_id, off } => {
             messages::set_flagged(&conn, message_id, !off)?;

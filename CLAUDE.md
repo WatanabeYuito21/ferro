@@ -336,6 +336,13 @@
   （0009の`idx_messages_unread`では行を読みに行くため実データで0.3秒→0.003秒）。受信箱の条件を
   変えるときは`append_folder_condition`・このクエリ・インデックスの3つを揃えること。
   `Settings::show_unread_badge`（既定オン）でオフにできる。
+- **すべて既読にする**（v0.0.43）: `messages::mark_folder_read`（条件は`append_folder_condition`。
+  受信箱は`idx_messages_unread_inbox`で未読だけを辿ることをテストの`EXPLAIN QUERY PLAN`で確認）と
+  `mark_label_read`（`list_by_label`と同じくゴミ箱を除く）。UPDATE 1文なので件数が多くても速い。
+  GUIは検索欄の横の「すべて既読」か`R`で確認を出してから`mark_all_read`コマンド（検索中は表示中の
+  検索結果のidを`bulk_update`へ）。一覧は作り直さず、読み込み済みの行だけ
+  `MessageList.markAllReadLocally`で既読の表示にする。TUIは`R`→`y`、CLIは`ferro read --all`
+  （受信箱のみ。CLIにはフォルダの概念が無いため）。
 - **選択と本文を開くことの分離**（v0.0.42）: `Settings::open_on_select`（既定オン＝従来どおり
   選ぶと開く）。GUIの`App.svelte`は選んでいる行`selectedMessageId`と本文を開いているか
   `detailOpen`を分け、選択は`selectMessage`、開くのは`openMessage`（Enter/o/ダブルクリック/
