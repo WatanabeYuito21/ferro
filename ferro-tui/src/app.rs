@@ -109,6 +109,8 @@ pub struct App {
 
     /// スヌーズ確認待ち（`z`の後に1/3/7のいずれかを待つ状態）。
     pub awaiting_snooze_choice: bool,
+    /// 「すべて既読にする」の確認待ち（`R`の後に`y`を待つ状態）。
+    pub awaiting_mark_all_confirm: bool,
 
     /// 設定画面のカーソル位置と、開いている入力フォーム・削除の確認（`settings_screen`参照）。
     pub settings_cursor: usize,
@@ -157,6 +159,7 @@ impl App {
             saved_searches: Vec::new(),
             sync_statuses: std::collections::HashMap::new(),
             awaiting_snooze_choice: false,
+            awaiting_mark_all_confirm: false,
             settings_cursor: 0,
             settings_form: None,
             settings_confirm: None,
@@ -460,6 +463,53 @@ impl App {
         messages::set_snoozed(&conn, id, until)?;
         drop(conn);
         self.refresh_all()?;
+        Ok(())
+    }
+
+    /// 表示中の一覧の名前（「すべて既読にする」の確認に出す）。
+    pub fn view_name(&self) -> String {
+        if self.search_results.is_some() {
+            return "検索結果".to_string();
+        }
+        match self.selection {
+            SidebarSelection::Folder(folder) => {
+                FOLDERS.iter().find(|(f, _)| *f == folder).map_or("", |(_, name)| name).to_string()
+            }
+            SidebarSelection::Label(id) => {
+                let name = self.labels.iter().find(|l| l.label.id == id).map_or("", |l| l.label.name.as_str());
+                format!("ラベル「{name}」")
+            }
+        }
+    }
+
+    /// 表示中のフォルダ/ラベル（検索中なら検索結果）の未読をすべて既読にする（`R`→`y`）。
+    /// GUIの「すべて既読」と同じ関数を使う。
+    pub fn mark_all_read(&mut self) -> anyhow::Result<()> {
+        let conn = self.write_conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let count = match (&self.search_results, self.selection) {
+            (Some(results), _) => {
+                let ids: Vec<i64> = results.iter().filter(|m| !m.is_read).map(|m| m.id).collect();
+                message_actions::apply_bulk(
+                    &conn,
+                    &self.search_index,
+                    &ids,
+                    message_actions::BulkAction::SetRead(true),
+                )?;
+                ids.len()
+            }
+            (None, SidebarSelection::Folder(folder)) => messages::mark_folder_read(&conn, folder, Self::now_unix())?,
+            (None, SidebarSelection::Label(id)) => messages::mark_label_read(&conn, id)?,
+        };
+        drop(conn);
+        for m in self.items.iter_mut().chain(self.search_results.iter_mut().flatten()) {
+            m.is_read = true;
+        }
+        if let Some(detail) = &mut self.detail {
+            detail.message.is_read = true;
+        }
+        self.read_delay_deadline = None;
+        self.refresh_all()?;
+        self.status = Some(if count > 0 { format!("{count}件を既読にしました") } else { "未読はありませんでした".to_string() });
         Ok(())
     }
 

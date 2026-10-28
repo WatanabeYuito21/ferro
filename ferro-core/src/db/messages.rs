@@ -117,6 +117,28 @@ pub fn set_read(conn: &Connection, id: i64, is_read: bool) -> rusqlite::Result<(
     Ok(())
 }
 
+/// フォルダの未読をすべて既読にする（「すべて既読にする」）。対象は`list_by_folder`と同じ条件
+/// （`append_folder_condition`）。既読にした件数を返す。受信箱は`idx_messages_unread_inbox`で
+/// 未読だけを辿る（テスト参照）。
+pub fn mark_folder_read(conn: &Connection, folder: Folder, now: i64) -> rusqlite::Result<usize> {
+    let mut sql = String::from("UPDATE messages SET is_read = 1 WHERE is_read = 0 AND ");
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+    append_folder_condition(&mut sql, &mut params, folder, now);
+    let param_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    conn.execute(&sql, param_refs.as_slice())
+}
+
+/// ラベルの付いたメッセージの未読をすべて既読にする。対象は`list_by_label`と同じ
+/// （ゴミ箱のものは含めない）。既読にした件数を返す。
+pub fn mark_label_read(conn: &Connection, label_id: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE messages SET is_read = 1
+         WHERE is_read = 0 AND is_deleted = 0
+           AND id IN (SELECT message_id FROM message_labels WHERE label_id = ?1)",
+        params![label_id],
+    )
+}
+
 /// 受信ルールの動作（既読にする・アーカイブする・スターを付ける）を当てる。立てるだけで
 /// 外すことはしない。実際に何か変わったらtrue。
 pub fn apply_rule_flags(
@@ -1184,6 +1206,49 @@ mod tests {
             .query_row(
                 "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM messages
                  WHERE is_read = 0 AND is_deleted = 0 AND is_archived = 0 AND (snoozed_until IS NULL OR snoozed_until <= ?1)",
+                [now],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(plan.contains("idx_messages_unread_inbox"), "{plan}");
+    }
+
+    #[test]
+    fn mark_folder_and_label_read_touch_only_that_view() {
+        let conn = open_in_memory().unwrap();
+        let account_id = make_account(&conn);
+        let inbox = insert_msg(&conn, account_id, "inbox", 100);
+        let archived = insert_msg(&conn, account_id, "archived", 200);
+        let snoozed = insert_msg(&conn, account_id, "snoozed", 300);
+        let labeled = insert_msg(&conn, account_id, "labeled", 400);
+        let labeled_trash = insert_msg(&conn, account_id, "labeled-trash", 500);
+        set_archived(&conn, archived, true).unwrap();
+        set_archived(&conn, labeled, true).unwrap();
+        set_snoozed(&conn, snoozed, Some(10_000)).unwrap();
+        set_deleted(&conn, labeled_trash, true).unwrap();
+        let label = crate::db::labels::insert(&conn, "L", "#000000").unwrap();
+        crate::db::labels::add_to_message(&conn, labeled, label).unwrap();
+        crate::db::labels::add_to_message(&conn, labeled_trash, label).unwrap();
+        let is_read = |id| get(&conn, id).unwrap().unwrap().is_read;
+
+        let now = 1_000;
+        assert_eq!(mark_folder_read(&conn, Folder::Inbox, now).unwrap(), 1);
+        assert!(is_read(inbox));
+        assert!(!is_read(archived) && !is_read(snoozed) && !is_read(labeled));
+        assert_eq!(mark_folder_read(&conn, Folder::Inbox, now).unwrap(), 0);
+
+        assert_eq!(mark_label_read(&conn, label).unwrap(), 1);
+        assert!(is_read(labeled));
+        assert!(!is_read(labeled_trash));
+
+        assert_eq!(mark_folder_read(&conn, Folder::Archive, now).unwrap(), 1);
+        assert!(is_read(archived));
+        assert!(!is_read(snoozed));
+
+        let plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN UPDATE messages SET is_read = 1 WHERE is_read = 0 AND
+                 is_deleted = 0 AND is_archived = 0 AND (snoozed_until IS NULL OR snoozed_until <= ?)",
                 [now],
                 |row| row.get(3),
             )

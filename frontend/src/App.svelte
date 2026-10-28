@@ -124,6 +124,43 @@
   let checkAnchor = null
   let bulkBusy = false
 
+  // 「すべて既読にする」（検索欄の横のボタンか`R`）。確かめてから行う。
+  const FOLDER_NAMES = { inbox: '受信箱', starred: 'スター付き', snoozed: 'スヌーズ', archive: 'アーカイブ', trash: 'ゴミ箱' }
+  let confirmingMarkAll = false
+  let markAllStatus = ''
+  let markAllStatusTimer = null
+  $: markAllScope =
+    searchResults !== null
+      ? '検索結果に表示中のメッセージ'
+      : selectedLabelId !== null
+        ? `ラベル「${labels.find((l) => l.id === selectedLabelId)?.name ?? ''}」`
+        : FOLDER_NAMES[selectedFolder]
+
+  async function markAllRead() {
+    confirmingMarkAll = false
+    try {
+      let count
+      if (searchResults !== null) {
+        const ids = searchResults.filter((m) => !m.is_read).map((m) => m.id)
+        if (ids.length > 0) await invoke('bulk_update', { messageIds: ids, action: { kind: 'read', value: true } })
+        count = ids.length
+        searchResults = searchResults.map((m) => (m.is_read ? m : { ...m, is_read: true }))
+      } else {
+        count = await invoke(
+          'mark_all_read',
+          selectedLabelId !== null ? { folder: null, labelId: selectedLabelId } : { folder: selectedFolder, labelId: null },
+        )
+        messageList?.markAllReadLocally()
+      }
+      markAllStatus = count > 0 ? `${count}件を既読にしました` : '未読はありませんでした'
+      clearTimeout(markAllStatusTimer)
+      markAllStatusTimer = setTimeout(() => (markAllStatus = ''), 4000)
+      refreshFolderCounts()
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
   let accountsConfigPath = ''
   let reloadingConfig = false
   let reloadConfigStatus = ''
@@ -377,8 +414,12 @@
           checkAnchor = selectedMessageId
         }
         break
+      case 'R':
+        confirmingMarkAll = true
+        break
       case 'Escape':
-        if (checkedIds.size > 0) clearChecked()
+        if (confirmingMarkAll) confirmingMarkAll = false
+        else if (checkedIds.size > 0) clearChecked()
         else if (detailShown) closeDetail()
         else if (selectedMessageId !== null) selectMessage(null)
         else if (searchResults !== null) clearSearch()
@@ -425,6 +466,7 @@
     selectedFolder = key
     selectedLabelId = null
     selectMessage(null)
+    confirmingMarkAll = false
     newMailCount = 0
     clearChecked()
   }
@@ -433,6 +475,7 @@
     currentView = 'messages'
     selectedLabelId = labelId
     selectMessage(null)
+    confirmingMarkAll = false
     newMailCount = 0
     clearChecked()
   }
@@ -969,6 +1012,14 @@
               </button>
               <button
                 type="button"
+                class:active={confirmingMarkAll}
+                title="表示中の未読をすべて既読にします（R）"
+                on:click={() => (confirmingMarkAll = !confirmingMarkAll)}
+              >
+                すべて既読
+              </button>
+              <button
+                type="button"
                 class="shortcut-hint"
                 title="キーボードショートカット"
                 on:click={() => (showKeyboardHelp = true)}
@@ -988,6 +1039,17 @@
                   <span class="error">{saveSearchError}</span>
                 {/if}
               </form>
+            {/if}
+            {#if confirmingMarkAll}
+              <div class="inline-confirm" role="alertdialog" aria-label="すべて既読にする">
+                <span>{markAllScope}の未読をすべて既読にしますか？</span>
+                <!-- svelte-ignore a11y-autofocus -->
+                <button type="button" class="primary" autofocus on:click={markAllRead}>既読にする</button>
+                <button type="button" on:click={() => (confirmingMarkAll = false)}>やめる</button>
+              </div>
+            {/if}
+            {#if markAllStatus}
+              <p class="inline-confirm" role="status">{markAllStatus}</p>
             {/if}
             {#if showAdvancedSearch}
               <AdvancedSearch
@@ -1202,7 +1264,8 @@
     color: var(--text-muted);
     font-size: 12.5px;
   }
-  .save-search {
+  .save-search,
+  .inline-confirm {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -1218,13 +1281,19 @@
     font: inherit;
     min-width: 180px;
   }
-  .save-search button {
+  .save-search button,
+  .inline-confirm button {
     border: 1px solid var(--border);
     background: var(--surface-subtle);
     border-radius: 7px;
     padding: 5px 12px;
     font: inherit;
     cursor: pointer;
+  }
+  .inline-confirm button.primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
   }
   .save-search-hint {
     color: var(--text-faint);
