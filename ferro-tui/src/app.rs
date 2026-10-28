@@ -74,6 +74,8 @@ pub struct App {
     pub screen: Screen,
     pub focus: Pane,
     pub show_help: bool,
+    /// フォルダのペインを出すか（`[`で切り替え。GUIのサイドバーの折りたたみに相当）。
+    pub show_sidebar: bool,
 
     pub folder_counts: FolderCounts,
     pub labels: Vec<LabelWithCount>,
@@ -134,6 +136,7 @@ impl App {
             screen: Screen::Messages,
             focus: Pane::List,
             show_help: false,
+            show_sidebar: true,
             folder_counts: FolderCounts::default(),
             labels: Vec::new(),
             selection: SidebarSelection::Folder(Folder::Inbox),
@@ -248,6 +251,14 @@ impl App {
         }
         self.load_selected_detail()?;
         Ok(())
+    }
+
+    /// フォルダのペインの表示を切り替える。隠したペインにフォーカスは残さない。
+    pub fn toggle_sidebar(&mut self) {
+        self.show_sidebar = !self.show_sidebar;
+        if !self.show_sidebar && self.focus == Pane::Sidebar {
+            self.focus = Pane::List;
+        }
     }
 
     pub fn current_list(&self) -> &[Message] {

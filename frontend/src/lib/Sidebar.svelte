@@ -18,6 +18,9 @@
     onCreateLabel = async () => {},
     onDeleteLabel = async () => {},
     onOpenSettings = () => {},
+    // 折りたたみ中は、開く・設定のボタンだけの細い帯にする（状態はApp.svelteが持つ）。
+    collapsed = false,
+    onToggleCollapsed = () => {},
   } = $props()
 
   const FOLDERS = [
@@ -61,7 +64,34 @@
   }
 </script>
 
+{#if collapsed}
+<aside class="sidebar collapsed">
+  <button
+    type="button"
+    class="collapse-toggle"
+    title="サイドバーを開く（[）"
+    aria-label="サイドバーを開く"
+    onclick={onToggleCollapsed}>»</button
+  >
+  <button
+    type="button"
+    class="settings-link rail-settings"
+    title="設定"
+    aria-label="設定"
+    onclick={onOpenSettings}>⚙</button
+  >
+</aside>
+{:else}
 <aside class="sidebar">
+  <div class="sidebar-top">
+    <button
+      type="button"
+      class="collapse-toggle"
+      title="サイドバーを折りたたむ（[）"
+      aria-label="サイドバーを折りたたむ"
+      onclick={onToggleCollapsed}>«</button
+    >
+  </div>
   <div class="folders">
     {#each FOLDERS as folder (folder.key)}
       <button
@@ -149,6 +179,7 @@
 
   <button type="button" class="settings-link" onclick={onOpenSettings}>設定</button>
 </aside>
+{/if}
 
 <style>
   .sidebar {
@@ -162,6 +193,36 @@
     gap: 2px;
     box-sizing: border-box;
     overflow-y: auto;
+  }
+  .sidebar.collapsed {
+    width: 44px;
+    padding: 12px 6px;
+    align-items: center;
+    overflow: hidden;
+  }
+  .sidebar-top {
+    display: flex;
+    justify-content: flex-end;
+    margin: -8px -2px 2px;
+  }
+  .collapse-toggle {
+    border: none;
+    background: none;
+    color: var(--text-faint);
+    font: inherit;
+    font-size: 15px;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .collapse-toggle:hover {
+    background: var(--surface-subtle);
+    color: var(--text);
+  }
+  .rail-settings {
+    text-align: center;
+    font-size: 15px;
   }
   .folders,
   .labels {
