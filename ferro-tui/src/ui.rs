@@ -49,12 +49,15 @@ fn render_messages_screen(f: &mut Frame, app: &App, area: Rect) {
         render_search_bar(f, app, search_area);
     }
 
+    let sidebar_width = if app.show_sidebar { 26 } else { 0 };
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(26), Constraint::Percentage(45), Constraint::Min(24)])
+        .constraints([Constraint::Length(sidebar_width), Constraint::Percentage(45), Constraint::Min(24)])
         .split(body_area);
 
-    render_sidebar(f, app, cols[0]);
+    if app.show_sidebar {
+        render_sidebar(f, app, cols[0]);
+    }
     render_list(f, app, cols[1]);
     render_detail(f, app, cols[2]);
 }
@@ -310,6 +313,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::styled("キー操作", Style::default().add_modifier(Modifier::BOLD)),
         Line::from(""),
         Line::from("Tab / Shift+Tab   ペイン切替（フォルダ|一覧|本文）"),
+        Line::from("[                 フォルダのペインを隠す / 出す"),
         Line::from("↑/k, ↓/j          カーソル移動"),
         Line::from("Enter             フォルダ/ラベルを選択"),
         Line::from("/                 検索（Enterで確定して結果を移動、Escで一覧に戻る）"),

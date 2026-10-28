@@ -90,18 +90,25 @@ fn handle_messages_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
             app.load_selected_detail()?;
             return Ok(());
         }
+        KeyCode::Char('[') => {
+            app.toggle_sidebar();
+            return Ok(());
+        }
+        // フォルダのペインを隠している間は、Tabで一覧と本文だけを行き来する。
         KeyCode::Tab => {
             app.focus = match app.focus {
                 Pane::Sidebar => Pane::List,
                 Pane::List => Pane::Detail,
-                Pane::Detail => Pane::Sidebar,
+                Pane::Detail if app.show_sidebar => Pane::Sidebar,
+                Pane::Detail => Pane::List,
             };
             return Ok(());
         }
         KeyCode::BackTab => {
             app.focus = match app.focus {
                 Pane::Sidebar => Pane::Detail,
-                Pane::List => Pane::Sidebar,
+                Pane::List if app.show_sidebar => Pane::Sidebar,
+                Pane::List => Pane::Detail,
                 Pane::Detail => Pane::List,
             };
             return Ok(());
@@ -174,4 +181,43 @@ fn handle_list_or_detail_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()>
         app.should_quit = true;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{mpsc, Arc, Mutex};
+
+    use ferro_core::db;
+    use ferro_core::search::SearchIndex;
+
+    use super::*;
+
+    #[test]
+    fn hiding_the_sidebar_moves_focus_and_tab_skips_it() {
+        let dir = std::env::temp_dir().join(format!("ferro-tui-keymap-test-{}", std::process::id()));
+        let conn = || Arc::new(Mutex::new(db::open(std::path::Path::new(":memory:")).unwrap()));
+        let index = Arc::new(SearchIndex::open_or_create(&dir).unwrap());
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(conn(), conn(), index, rx, tx).unwrap();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+
+        app.focus = Pane::Sidebar;
+        handle_key(&mut app, key(KeyCode::Char('['))).unwrap();
+        assert!(!app.show_sidebar);
+        assert_eq!(app.focus, Pane::List);
+        handle_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.focus, Pane::Detail);
+        handle_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.focus, Pane::List);
+        handle_key(&mut app, key(KeyCode::BackTab)).unwrap();
+        assert_eq!(app.focus, Pane::Detail);
+
+        handle_key(&mut app, key(KeyCode::Char('['))).unwrap();
+        assert!(app.show_sidebar);
+        handle_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert_eq!(app.focus, Pane::Sidebar);
+
+        drop(app);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

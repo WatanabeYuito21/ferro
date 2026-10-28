@@ -74,6 +74,25 @@
   let messageDetail
   let searchInput
   let showKeyboardHelp = false
+
+  // サイドバーの折りたたみ（`[`キーかサイドバーのボタン）。この端末だけの見た目の好みなので
+  // 設定ファイルではなくlocalStorageに覚える（読めなくても開いた状態で始めるだけ）。
+  const SIDEBAR_COLLAPSED_KEY = 'ferro.sidebarCollapsed'
+  let sidebarCollapsed = false
+  try {
+    sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {
+    // 保存できない環境では毎回開いた状態から
+  }
+
+  function toggleSidebar() {
+    sidebarCollapsed = !sidebarCollapsed
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0')
+    } catch {
+      // 同上
+    }
+  }
   // `g`を押した直後なら、次のキーでフォルダへ移動する（`g`→`i`で受信箱、等）。
   let pendingGoTo = false
   let pendingGoToTimer = null
@@ -274,6 +293,11 @@
     }
     if (event.key === '?') {
       showKeyboardHelp = true
+      event.preventDefault()
+      return
+    }
+    if (event.key === '[') {
+      toggleSidebar()
       event.preventDefault()
       return
     }
@@ -801,6 +825,8 @@
       onCreateLabel={createLabel}
       onDeleteLabel={deleteLabel}
       onOpenSettings={() => (currentView = 'settings')}
+      collapsed={sidebarCollapsed}
+      onToggleCollapsed={toggleSidebar}
     />
 
     <div class="main-content">
