@@ -54,7 +54,7 @@
 
   // MessageDetailの「既読にするまでの時間」設定に使う。設定画面から戻るたびに
   // 読み直す（SettingsView側で変更されている可能性があるため）。
-  let settings = { show_preview_line: true, show_sender_avatar: false, mark_read_delay: true }
+  let settings = { show_preview_line: true, show_sender_avatar: false, mark_read_delay: true, open_on_select: true }
 
   let searchQuery = ''
   // null = 検索していない（通常のMessageList表示）。配列なら検索結果表示に切り替える。
@@ -67,7 +67,28 @@
   let searchRequestId = 0
   let showAdvancedSearch = false
 
+  // 一覧で選んでいるメッセージと、その本文を開いているか。「選択しただけで本文を開く」
+  // （`open_on_select`、既定オン）なら選ぶと同時に開く。オフなら選ぶだけで、Enter/o/
+  // ダブルクリックで開く（選択を動かすと本文は閉じる。本文はいつも選んでいる行のもの）。
   let selectedMessageId = null
+  let detailOpen = false
+  $: openOnSelect = settings.open_on_select !== false
+  $: detailShown = selectedMessageId !== null && detailOpen
+
+  function selectMessage(id) {
+    selectedMessageId = id
+    detailOpen = id !== null && openOnSelect
+  }
+
+  function openMessage(id) {
+    selectedMessageId = id
+    detailOpen = id !== null
+  }
+
+  function closeDetail() {
+    detailOpen = false
+    if (openOnSelect) selectedMessageId = null
+  }
 
   // キーボード操作（`handleKeydown`）から一覧・本文の操作を呼ぶための参照。
   let messageList
@@ -191,7 +212,7 @@
     const search = savedSearches[index]
     if (!search) return
     currentView = 'messages'
-    selectedMessageId = null
+    selectMessage(null)
     savingSearch = false
     searchQuery = search.query
     clearTimeout(searchDebounceTimer)
@@ -231,7 +252,7 @@
   function handleMessagePatched(id, patch) {
     const result = applyToList(id, patch)
     if (result?.removed && selectedMessageId === id) {
-      selectedMessageId = result.nextId
+      selectMessage(result.nextId)
     }
     // フォルダ件数は既読/未読に関係しない（全件数）ので、既読化だけなら数え直さない
     // （本文を開くたびに全フォルダのCOUNTを取り直すことになるため）。
@@ -271,7 +292,7 @@
     } else {
       id = messageList?.moveSelection(delta) ?? null
     }
-    if (id != null) selectedMessageId = id
+    if (id != null) selectMessage(id)
   }
 
   const GO_TO_FOLDER = { i: 'inbox', s: 'starred', z: 'snoozed', a: 'archive', t: 'trash' }
@@ -322,7 +343,14 @@
       return
     }
 
-    const detail = selectedMessageId !== null ? messageDetail : null
+    // 本文を開かずに選んでいるだけの行にも、`e`/`s`/`u`/`#`は効かせる。
+    if (!detailShown && selectedMessageId !== null && ['e', 's', 'u', '#', 'Delete'].includes(event.key)) {
+      runOnSelected(event.key)
+      event.preventDefault()
+      return
+    }
+
+    const detail = detailShown ? messageDetail : null
     let handled = true
     switch (event.key) {
       case 'j':
@@ -338,8 +366,9 @@
         // ボタン等にフォーカスがある時のEnterは、そのボタンを押す本来の動作に任せる。
         if (event.key === 'Enter' && event.target.closest?.('button, a, [role="button"]')) {
           handled = false
-        } else if (selectedMessageId === null) {
-          moveSelection(0)
+        } else {
+          if (selectedMessageId === null) moveSelection(0)
+          if (selectedMessageId !== null) openMessage(selectedMessageId)
         }
         break
       case 'x':
@@ -350,7 +379,8 @@
         break
       case 'Escape':
         if (checkedIds.size > 0) clearChecked()
-        else if (selectedMessageId !== null) selectedMessageId = null
+        else if (detailShown) closeDetail()
+        else if (selectedMessageId !== null) selectMessage(null)
         else if (searchResults !== null) clearSearch()
         else handled = false
         break
@@ -394,7 +424,7 @@
     currentView = 'messages'
     selectedFolder = key
     selectedLabelId = null
-    selectedMessageId = null
+    selectMessage(null)
     newMailCount = 0
     clearChecked()
   }
@@ -402,7 +432,7 @@
   function selectLabel(labelId) {
     currentView = 'messages'
     selectedLabelId = labelId
-    selectedMessageId = null
+    selectMessage(null)
     newMailCount = 0
     clearChecked()
   }
@@ -425,7 +455,7 @@
   function onSearchResultClick(id, event) {
     const result = clickSelection(searchResults, checkedIds, checkAnchor, id, event)
     setChecked(result.checked, result.anchor)
-    if (result.open) selectedMessageId = id
+    if (result.open) selectMessage(id)
   }
 
   const SNOOZE_SECONDS = { '1d': 24 * 60 * 60, '3d': 3 * 24 * 60 * 60, '1w': 7 * 24 * 60 * 60 }
@@ -471,7 +501,7 @@
       const patch = bulkPatch(action)
       for (const id of ids) applyToList(id, patch)
       // 開いている本文の表示は古くなるので閉じる（一覧の行は上で更新済み）。
-      if (ids.includes(selectedMessageId)) selectedMessageId = null
+      if (ids.includes(selectedMessageId)) selectMessage(null)
       clearChecked()
       refreshFolderCounts()
       if (action.kind === 'label') refreshLabels()
@@ -503,6 +533,31 @@
       case 'Delete':
         runBulk({ kind: 'delete' })
         break
+    }
+  }
+
+  // 本文を開かずに選んでいる行への`e`/`s`/`u`/`#`（「選択しただけで本文を開く」がオフの時）。
+  // 本文の操作ボタンと同じく1件ずつ切り替え、結果は`handleMessagePatched`で行に当てる
+  // （表示中のフォルダから外れたら次の行を選ぶ）。
+  async function runOnSelected(key) {
+    const message = visibleItems().find((m) => m.id === selectedMessageId)
+    if (!message || bulkBusy) return
+    const action = {
+      e: { kind: 'archive', value: !message.is_archived },
+      s: { kind: 'flag', value: !message.is_flagged },
+      u: { kind: 'read', value: !message.is_read },
+      '#': { kind: 'delete' },
+      Delete: { kind: 'delete' },
+    }[key]
+    if (!action || (action.kind === 'delete' && message.is_deleted)) return
+    bulkBusy = true
+    try {
+      await invoke('bulk_update', { messageIds: [message.id], action })
+      handleMessagePatched(message.id, bulkPatch(action))
+    } catch (e) {
+      error = String(e)
+    } finally {
+      bulkBusy = false
     }
   }
 
@@ -986,7 +1041,8 @@
                           role="button"
                           tabindex="0"
                           on:click={(e) => onSearchResultClick(message.id, e)}
-                          on:keydown={(e) => e.key === 'Enter' && (selectedMessageId = message.id)}
+                          on:dblclick={(e) => !(e.shiftKey || e.ctrlKey || e.metaKey) && openMessage(message.id)}
+                          on:keydown={(e) => e.key === 'Enter' && openMessage(selectedMessageId ?? message.id)}
                         >
                           <input
                             type="checkbox"
@@ -1020,23 +1076,24 @@
                       {checkedIds}
                       {checkAnchor}
                       {colorRules}
-                      onSelect={(id) => (selectedMessageId = id)}
+                      onSelect={selectMessage}
+                      onOpen={openMessage}
                       onCheck={setChecked}
                     />
                   {/key}
                 {/if}
               </div>
 
-              {#if selectedMessageId !== null}
+              {#if detailShown}
                 <div class="detail-pane">
                   <MessageDetail
                     bind:this={messageDetail}
                     messageId={selectedMessageId}
                     allLabels={labels}
                     markReadDelay={settings.mark_read_delay}
-                    onClose={() => (selectedMessageId = null)}
+                    onClose={closeDetail}
                     onChanged={handleMessagePatched}
-                    onOpenMessage={(id) => (selectedMessageId = id)}
+                    onOpenMessage={openMessage}
                     highlightTerms={searchResults !== null ? searchHighlightTerms : []}
                   />
                 </div>
