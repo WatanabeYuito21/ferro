@@ -40,6 +40,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // 「すべて既読にする」の確認（`R`の直後）。`y`以外はやめる。
+    if app.awaiting_mark_all_confirm {
+        app.awaiting_mark_all_confirm = false;
+        if key.code == KeyCode::Char('y') {
+            app.mark_all_read()?;
+        } else {
+            app.status = Some("取り消しました".to_string());
+        }
+        return Ok(());
+    }
+
     if app.show_help {
         // ヘルプは何かキーを押せば閉じる。
         app.show_help = false;
@@ -179,6 +190,10 @@ fn handle_list_or_detail_key(app: &mut App, key: KeyEvent) -> anyhow::Result<()>
         KeyCode::Char('a') => app.toggle_archived()?,
         KeyCode::Char('d') => app.toggle_deleted()?,
         KeyCode::Char('z') => app.awaiting_snooze_choice = true,
+        KeyCode::Char('R') => {
+            app.awaiting_mark_all_confirm = true;
+            app.status = Some(format!("{}の未読をすべて既読にしますか？ (y: 実行 / 他のキー: やめる)", app.view_name()));
+        }
         KeyCode::Char('H') => app.show_headers = !app.show_headers,
         _ => {}
     }
@@ -278,6 +293,18 @@ mod tests {
         app.settings.open_on_select = true;
         handle_key(&mut app, key(KeyCode::Char('j'))).unwrap();
         assert_eq!(app.detail.as_ref().unwrap().message.subject.as_deref(), Some("b"));
+
+        // R→y以外では何もせず、R→yで受信箱の未読がすべて既読になる。
+        assert!(app.items.iter().all(|m| !m.is_read));
+        handle_key(&mut app, key(KeyCode::Char('R'))).unwrap();
+        handle_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        assert!(app.items.iter().all(|m| !m.is_read));
+        handle_key(&mut app, key(KeyCode::Char('R'))).unwrap();
+        assert!(app.status.as_deref().unwrap().contains("受信箱"));
+        handle_key(&mut app, key(KeyCode::Char('y'))).unwrap();
+        assert!(app.items.iter().all(|m| m.is_read));
+        assert!(app.read_delay_deadline.is_none());
+        assert_eq!(app.status.as_deref(), Some("2件を既読にしました"));
 
         drop(app);
         let _ = std::fs::remove_dir_all(&dir);
