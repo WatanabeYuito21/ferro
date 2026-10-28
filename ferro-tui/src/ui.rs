@@ -315,7 +315,7 @@ fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from("Tab / Shift+Tab   ペイン切替（フォルダ|一覧|本文）"),
         Line::from("[                 フォルダのペインを隠す / 出す"),
         Line::from("↑/k, ↓/j          カーソル移動"),
-        Line::from("Enter             フォルダ/ラベルを選択"),
+        Line::from("Enter             フォルダ/ラベルを選択 / 本文を開く"),
         Line::from("/                 検索（Enterで確定して結果を移動、Escで一覧に戻る）"),
         Line::from("r                 既読/未読切替"),
         Line::from("s                 スター切替"),

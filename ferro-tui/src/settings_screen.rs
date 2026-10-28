@@ -98,6 +98,11 @@ fn items(app: &App) -> Vec<Item> {
             get: |s| s.mark_read_delay,
             set: |s, v| s.mark_read_delay = v,
         },
+        Item::Toggle {
+            label: "選択しただけで本文を開く（オフならEnterで開く）",
+            get: |s| s.open_on_select,
+            set: |s, v| s.open_on_select = v,
+        },
         Item::Reindex,
         Item::Header("GUIの設定（このファイルを共有しているので、ここからも変えられます）"),
         Item::Toggle { label: "一覧のプレビュー行", get: |s| s.show_preview_line, set: |s, v| s.show_preview_line = v },
