@@ -368,20 +368,22 @@ pub fn reset_all_fts_indexed(conn: &Connection) -> rusqlite::Result<usize> {
     )
 }
 
-/// `attachment_count`/`preview`を再計算した値で上書きする。`reindex_all`が
+/// `subject`/`attachment_count`/`preview`を再計算した値で上書きする。`reindex_all`が
 /// Maildirから読み直したメッセージについて呼ぶ（プレビューの切り詰め長を伸ばした
 /// ([`crate::mail::parse::make_preview`]) 際に、sync時点で既に古い(短い)previewが
 /// 保存されている既存メッセージへ遡って反映するため。色分けルールがpreviewの
-/// 途中までしかマッチ対象に見えていなかった、という形で実際に踏んだ）。
-pub fn update_preview(
+/// 途中までしかマッチ対象に見えていなかった、という形で実際に踏んだ。件名も同じく、
+/// 復号の不具合を直した後に再構築で既存メッセージの文字化けを直せるようにしている）。
+pub fn update_reparsed(
     conn: &Connection,
     id: i64,
+    subject: Option<&str>,
     attachment_count: i64,
     preview: Option<&str>,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE messages SET attachment_count = ?1, preview = ?2 WHERE id = ?3",
-        params![attachment_count, preview, id],
+        "UPDATE messages SET subject = ?1, attachment_count = ?2, preview = ?3 WHERE id = ?4",
+        params![subject, attachment_count, preview, id],
     )?;
     Ok(())
 }

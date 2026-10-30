@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::db::Connection;
 use crate::db::messages;
 use crate::mail::attachments;
-use crate::mail::parse::{extract_plain_text_body, make_preview};
+use crate::mail::parse::{make_preview, parse_full};
 use crate::maildir;
 use crate::search::{IndexableMessage, SearchError, SearchIndex, with_commit_retry};
 
@@ -92,11 +92,11 @@ pub fn reindex_all_with_progress(
 /// 1件ずつのフォールバックなら、その中の大半（クラッシュの原因ではない
 /// メッセージ）は普通に投入できる。
 ///
-/// ついでに`attachment_count`/`preview`もMaildirから読み直した内容で更新する
+/// ついでに`subject`/`attachment_count`/`preview`もMaildirから読み直した内容で更新する
 /// （検索インデックスへの投入とは無関係にせよ、どのみち`raw`/`body`を読んでいる
-/// ので追加コストがほぼ無い）。`preview`の切り詰め長を伸ばした際に、sync時点で
-/// 既に短いpreviewが保存されていた既存メッセージへ、この関数を通じて
-/// （`reindex_all`経由で）遡って反映するため（`db::messages::update_preview`参照）。
+/// ので追加コストがほぼ無い）。`preview`の切り詰め長を伸ばした・件名の復号を直した
+/// 際に、sync時点の古い値が保存されていた既存メッセージへ、この関数を通じて
+/// （`reindex_all`経由で）遡って反映するため（`db::messages::update_reparsed`参照）。
 fn index_batch_with_fallback(
     conn: &Connection,
     index: &SearchIndex,
@@ -110,7 +110,9 @@ fn index_batch_with_fallback(
             let Ok(raw) = maildir::load(maildir_base, message.account_id, &message.uidl) else {
                 continue;
             };
-            let body = extract_plain_text_body(&raw).unwrap_or_default();
+            let parsed = parse_full(&raw);
+            let subject = refreshed_subject(message, parsed.headers.subject);
+            let body = parsed.body.unwrap_or_default();
             let from = format!(
                 "{} {}",
                 message.from_name.as_deref().unwrap_or(""),
@@ -119,7 +121,7 @@ fn index_batch_with_fallback(
 
             index.index_message(&IndexableMessage {
                 id: message.id,
-                subject: message.subject.as_deref().unwrap_or(""),
+                subject: subject.as_deref().unwrap_or(""),
                 from: &from,
                 body: &body,
                 date_header: message.date_header,
@@ -148,7 +150,9 @@ fn index_batch_with_fallback(
         let Ok(raw) = maildir::load(maildir_base, message.account_id, &message.uidl) else {
             continue;
         };
-        let body = extract_plain_text_body(&raw).unwrap_or_default();
+        let parsed = parse_full(&raw);
+        let subject = refreshed_subject(message, parsed.headers.subject);
+        let body = parsed.body.unwrap_or_default();
         let from = format!(
             "{} {}",
             message.from_name.as_deref().unwrap_or(""),
@@ -158,7 +162,7 @@ fn index_batch_with_fallback(
         let result = with_commit_retry(|| -> crate::search::Result<()> {
             index.index_message(&IndexableMessage {
                 id: message.id,
-                subject: message.subject.as_deref().unwrap_or(""),
+                subject: subject.as_deref().unwrap_or(""),
                 from: &from,
                 body: &body,
                 date_header: message.date_header,
@@ -221,7 +225,12 @@ pub fn index_status(conn: &Connection, index: &SearchIndex) -> Result<IndexStatu
 /// 失敗したらバッチ全体を諦める。
 const MAX_CONSECUTIVE_FALLBACK_FAILURES: u32 = 3;
 
-/// `page`の各メッセージについて、Maildirに実体があるものだけ`attachment_count`/
+/// 生メールから読み直した件名。読み直せなければ（壊れたメール等）DBの値をそのまま使う。
+fn refreshed_subject(message: &messages::Message, parsed: Option<String>) -> Option<String> {
+    parsed.or_else(|| message.subject.clone())
+}
+
+/// `page`の各メッセージについて、Maildirに実体があるものだけ`subject`/`attachment_count`/
 /// `preview`を再計算してDBへ書き戻す（`index_batch_with_fallback`参照）。
 fn update_previews(
     conn: &Connection,
@@ -232,9 +241,11 @@ fn update_previews(
         let Ok(raw) = maildir::load(maildir_base, message.account_id, &message.uidl) else {
             continue;
         };
+        let parsed = parse_full(&raw);
+        let subject = refreshed_subject(message, parsed.headers.subject);
         let attachment_count = attachments::list_attachments(&raw).len() as i64;
-        let preview = make_preview(extract_plain_text_body(&raw).as_deref());
-        messages::update_preview(conn, message.id, attachment_count, preview.as_deref())?;
+        let preview = make_preview(parsed.body.as_deref());
+        messages::update_reparsed(conn, message.id, subject.as_deref(), attachment_count, preview.as_deref())?;
     }
     Ok(())
 }
@@ -379,6 +390,56 @@ mod tests {
             "expected the refreshed preview to include the full body, got: {:?}",
             refreshed.preview
         );
+    }
+
+    /// 件名の復号を直した後、sync時点の文字化けした件名が再構築で直り、
+    /// 直った件名で検索できること。
+    #[test]
+    fn reindex_all_refreshes_a_garbled_subject() {
+        let conn = open_in_memory().unwrap();
+        let maildir_dir = tempfile::tempdir().unwrap();
+        let index = SearchIndex::create_in_ram().unwrap();
+
+        let account_id = accounts::insert(
+            &conn,
+            &NewAccount {
+                name: "test",
+                host: "pop.example.com",
+                port: 995,
+                username: "user",
+                use_tls: true,
+            },
+        )
+        .unwrap();
+
+        // 単語の境目でISO-2022-JPのエスケープシーケンスが分断された件名（「悪意のあるSQL」）。
+        let raw = b"Subject: =?iso-2022-jp?Q?=1B=24B0=2D0U=24N=24=22=24k=1B?=\r\n =?iso-2022-jp?Q?=28BSQL?=\r\n\r\nbody";
+        maildir::store(maildir_dir.path(), account_id, "u1", raw).unwrap();
+        let id = db_messages::insert_new(
+            &conn,
+            &NewMessage {
+                account_id,
+                uidl: "u1",
+                message_id_header: None,
+                // 以前の復号で保存された生のヘッダー文字列を模す。
+                subject: Some("=?iso-2022-jp?Q?=1B=24B0=2D0U=24N=24=22=24k=1B?="),
+                from_name: None,
+                from_addr: None,
+                to_addr: None,
+                date_header: 1000,
+                size_bytes: raw.len() as i64,
+                attachment_count: 0,
+                preview: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        reindex_all(&conn, maildir_dir.path(), &index).unwrap();
+
+        let refreshed = db_messages::get(&conn, id).unwrap().unwrap();
+        assert_eq!(refreshed.subject.as_deref(), Some("悪意のあるSQL"));
+        assert_eq!(index.search("悪意", 10).unwrap().len(), 1);
     }
 
     #[test]
