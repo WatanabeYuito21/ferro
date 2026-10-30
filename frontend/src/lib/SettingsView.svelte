@@ -20,6 +20,9 @@
 
   let {
     onBack = () => {},
+    // 保存できた設定を親（App.svelte）へ知らせる。親は自分の`settings`をこれで置き換えて
+    // すぐ反映する（「戻る」以外のサイドバー等で画面を離れても古い設定のままにならないように）。
+    onSaved = () => {},
     accounts = [],
     accountsConfigPath = '',
     syncStatus = {},
@@ -91,18 +94,23 @@
       : installedFonts,
   )
 
-  async function toggle(key) {
-    if (!settings || saving) return
-    const next = { ...settings, [key]: !settings[key] }
+  // 設定を1項目変えて保存する共通処理。保存できたら`onSaved`で親にも反映する。
+  async function save(next) {
     settings = next
     saving = true
     try {
       await invoke('update_settings', { settings: next })
+      onSaved(next)
     } catch (e) {
       error = String(e)
     } finally {
       saving = false
     }
+  }
+
+  async function toggle(key) {
+    if (!settings || saving) return
+    await save({ ...settings, [key]: !settings[key] })
   }
 
   // テーマ/アクセントカラー/フォント/文字サイズは変更した瞬間に見た目へ
@@ -111,32 +119,15 @@
   async function updateAppearance(key, value) {
     if (!settings || saving) return
     const next = { ...settings, [key]: value }
-    settings = next
     applyAppearance(next)
-    saving = true
-    try {
-      await invoke('update_settings', { settings: next })
-    } catch (e) {
-      error = String(e)
-    } finally {
-      saving = false
-    }
+    await save(next)
   }
 
   const SYNC_INTERVAL_OPTIONS = [1, 5, 10, 15, 30, 60]
 
   async function updateSyncInterval(minutes) {
     if (!settings || saving) return
-    const next = { ...settings, sync_interval_minutes: minutes }
-    settings = next
-    saving = true
-    try {
-      await invoke('update_settings', { settings: next })
-    } catch (e) {
-      error = String(e)
-    } finally {
-      saving = false
-    }
+    await save({ ...settings, sync_interval_minutes: minutes })
   }
 
 
@@ -144,31 +135,13 @@
   // 既定値も0にしている（db::settings::Settingsのドキュメント参照）。
   async function updateRetentionDays(days) {
     if (!settings || saving) return
-    const next = { ...settings, retention_days: days }
-    settings = next
-    saving = true
-    try {
-      await invoke('update_settings', { settings: next })
-    } catch (e) {
-      error = String(e)
-    } finally {
-      saving = false
-    }
+    await save({ ...settings, retention_days: days })
   }
 
   // 0 = サーバー側のメールを削除しない（既定）。
   async function updateServerDeleteDays(days) {
     if (!settings || saving) return
-    const next = { ...settings, server_delete_days: days }
-    settings = next
-    saving = true
-    try {
-      await invoke('update_settings', { settings: next })
-    } catch (e) {
-      error = String(e)
-    } finally {
-      saving = false
-    }
+    await save({ ...settings, server_delete_days: days })
   }
 
   // 通知の対象にするラベル（空なら全ての新着）。チェックを付け外しするたびに保存する。
@@ -176,16 +149,7 @@
     if (!settings || saving) return
     const current = settings.notify_labels ?? []
     const nextLabels = current.includes(name) ? current.filter((n) => n !== name) : [...current, name]
-    const next = { ...settings, notify_labels: nextLabels }
-    settings = next
-    saving = true
-    try {
-      await invoke('update_settings', { settings: next })
-    } catch (e) {
-      error = String(e)
-    } finally {
-      saving = false
-    }
+    await save({ ...settings, notify_labels: nextLabels })
   }
 
   let purging = $state(false)
