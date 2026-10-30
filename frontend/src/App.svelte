@@ -52,8 +52,9 @@
   let folderCounts = { inbox: 0, starred: 0, snoozed: 0, archive: 0, trash: 0 }
   let labels = []
 
-  // MessageDetailの「既読にするまでの時間」設定に使う。設定画面から戻るたびに
-  // 読み直す（SettingsView側で変更されている可能性があるため）。
+  // MessageDetailの「既読にするまでの時間」設定等に使う。設定画面で保存するたびに
+  // `onSaved`で置き換える（以前は「戻る」ボタンでだけ読み直していたため、サイドバーの
+  // フォルダ等から画面を離れると古い設定のまま動いていた）。「戻る」でも念のため読み直す。
   let settings = { show_preview_line: true, show_sender_avatar: false, mark_read_delay: true, open_on_select: true }
 
   let searchQuery = ''
@@ -979,6 +980,7 @@
             currentView = 'messages'
             refreshSettings()
           }}
+          onSaved={(next) => (settings = next)}
         />
       {:else}
         <section class="messages-view">
