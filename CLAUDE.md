@@ -626,6 +626,16 @@
   場合はmail-parserの元の結果（文字化けしたまま）を諦めてそのまま使う（悪化はさせない）。
   From表示名（`address.rs`側）にも同種の根本原因があり得るが、実際に報告されたのは
   件名のみだったため今回はSubjectに限定して対応した。
+  **RFC2047の単語の境目で分断された件名（v0.0.45で対策）**: ISO-2022-JPの件名を機械的な長さで
+  エンコード単語に分け、`ESC ( B`や2バイト文字の途中で単語を切る送信元が実在する（監視アラート
+  メールで実際に踏んだ。RFC2047は単語ごとに完結させるよう求めているので仕様違反）。mail-parserは
+  単語ごとに復号するため`悪意のある�(BSQL…`のように壊れ、さらにU+FFFDを見た上記の救済が
+  ASCIIだけの生ヘッダー（`=?iso-2022-jp?Q?...?=`）をShift_JISとして「エラー無く」読めてしまい、
+  **件名が生のエンコード単語の文字列そのものになっていた**。`recover_mojibake_header`は、
+  まず`decode_joined_encoded_words`（隣り合う同じcharsetの単語のバイト列を連結してから1度に
+  復号。正しく分割された件名でも結果は同じ）を試し、legacy charsetとしての読み直しは生の値に
+  8ビットのバイトかESCがある場合だけにした。既存メッセージの件名は`reindex_all`が生メールから
+  読み直して直す（`messages::update_reparsed`。以前は`preview`/`attachment_count`だけだった）。
 - **`keyring`crate（Linux/secret-service）**: WSL等でSecret Service D-Busサービスが動いていないと
   `org.freedesktop.secrets was not provided`のようなエラーになる。また`default`という名前の
   コレクションエイリアスが未設定だと保存時に`no result found`になりうる（通常はログイン時にPAM経由で
