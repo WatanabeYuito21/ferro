@@ -63,10 +63,18 @@ pub fn parse_headers(raw: &[u8]) -> ParsedHeaders {
 }
 
 /// `decoded`（mail-parserが返した文字列）がU+FFFDを含む場合にのみ、`raw`から
-/// `header_name`の生のヘッダー値バイト列を取り出し、legacy日本語charsetとして
-/// 再デコードを試みる。ASCII/UTF-8/RFC2047で正しくデコードできている大多数の
-/// ケースでは`decoded`にU+FFFDが含まれないため即座にNoneを返し、一切関与しない。
-/// 再デコードにも失敗した場合はNoneを返し、呼び出し側はmail-parserの元の
+/// `header_name`の生のヘッダー値バイト列を取り出して復号し直す。ASCII/UTF-8/RFC2047で
+/// 正しくデコードできている大多数のケースでは`decoded`にU+FFFDが含まれないため
+/// 即座にNoneを返し、一切関与しない。救済の経路は2つ:
+///
+/// - 値がRFC2047のエンコード単語なら`decode_joined_encoded_words`（単語の境目で
+///   文字が分断されている送信元への対策）
+/// - 値に8ビットのバイトかESC（ISO-2022-JP）が生で入っていれば、legacy日本語charsetと
+///   して読み直す。ASCIIだけの値はShift_JISとしても「エラー無く」読めてしまうため
+///   試さない（以前は試していたので、エンコード単語の復号に失敗した件名が
+///   `=?iso-2022-jp?Q?...?=`という生の文字列のまま保存されていた）。
+///
+/// どちらにも失敗した場合はNoneを返し、呼び出し側はmail-parserの元の
 /// （文字化けしたままの）結果をそのまま使う（今より悪化はしない）。
 fn recover_mojibake_header(raw: &[u8], header_name: &str, decoded: Option<&str>) -> Option<String> {
     let decoded = decoded?;
@@ -74,7 +82,134 @@ fn recover_mojibake_header(raw: &[u8], header_name: &str, decoded: Option<&str>)
         return None;
     }
     let raw_value = raw_header_value(raw, header_name)?;
-    try_decode_legacy_japanese(&raw_value)
+    if let Some(joined) = decode_joined_encoded_words(&raw_value) {
+        return Some(joined);
+    }
+    if raw_value.iter().any(|&b| b >= 0x80 || b == 0x1B) {
+        return try_decode_legacy_japanese(&raw_value);
+    }
+    None
+}
+
+/// RFC2047のエンコード単語（`=?charset?B|Q?...?=`）を含むヘッダー値を、隣り合う同じ
+/// charsetの単語のバイト列を連結してから1度に復号する。
+///
+/// RFC2047は単語ごとに完結した文字列にするよう求めているが、ISO-2022-JPの件名を
+/// 決まった長さで機械的に分割し、エスケープシーケンス（`ESC ( B`）や2バイト文字の
+/// 途中で単語を切る送信元が実在する（実際に監視アラートメールで踏んだ）。mail-parserは
+/// 単語ごとに復号するので、境目で`�(BSQL`のように壊れる。連結してから復号すれば、
+/// 正しく分割された件名でも結果は変わらない（単語間の空白はRFC2047どおり捨てる）。
+///
+/// エンコード単語が1つも無い、知らないcharset、書式の誤り、復号後にU+FFFDが残る、
+/// のいずれかならNone。
+fn decode_joined_encoded_words(value: &[u8]) -> Option<String> {
+    let value = std::str::from_utf8(value).ok()?;
+    let mut out = String::new();
+    // 連結中の単語のcharsetと、復号済み（charset変換前）のバイト列。
+    let mut pending: Option<(&'static encoding_rs::Encoding, Vec<u8>)> = None;
+    let mut found_any = false;
+    let mut rest = value;
+
+    while let Some((start, word)) = find_encoded_word(rest) {
+        found_any = true;
+        let between = &rest[..start];
+        let encoding = encoding_rs::Encoding::for_label(word.charset.as_bytes())?;
+        let bytes = word.decode_bytes()?;
+        // エンコード単語の間の空白だけは捨てる（RFC2047 6.2）。
+        if pending.is_none() || !between.trim().is_empty() {
+            flush_encoded_words(&mut out, pending.take())?;
+            out.push_str(between);
+        }
+        match &mut pending {
+            Some((pending_encoding, buf)) if *pending_encoding == encoding => buf.extend(bytes),
+            _ => {
+                flush_encoded_words(&mut out, pending.take())?;
+                pending = Some((encoding, bytes));
+            }
+        }
+        rest = &rest[start + word.len..];
+    }
+    if !found_any {
+        return None;
+    }
+    flush_encoded_words(&mut out, pending)?;
+    out.push_str(rest);
+    (!out.contains('\u{FFFD}')).then_some(out)
+}
+
+fn flush_encoded_words(out: &mut String, pending: Option<(&'static encoding_rs::Encoding, Vec<u8>)>) -> Option<()> {
+    if let Some((encoding, bytes)) = pending {
+        let (decoded, _, had_errors) = encoding.decode(&bytes);
+        if had_errors {
+            return None;
+        }
+        out.push_str(&decoded);
+    }
+    Some(())
+}
+
+struct EncodedWord<'a> {
+    charset: &'a str,
+    base64: bool,
+    text: &'a str,
+    /// `=?`から`?=`までの長さ。
+    len: usize,
+}
+
+impl EncodedWord<'_> {
+    fn decode_bytes(&self) -> Option<Vec<u8>> {
+        if self.base64 {
+            return mail_parser::decoders::base64::base64_decode(self.text.as_bytes());
+        }
+        // Qエンコーディング: `_`は空白、`=XX`は16進のバイト。
+        let mut bytes = Vec::with_capacity(self.text.len());
+        let mut iter = self.text.bytes();
+        while let Some(b) = iter.next() {
+            match b {
+                b'_' => bytes.push(b' '),
+                b'=' => {
+                    let hex = [iter.next()?, iter.next()?];
+                    bytes.push(u8::from_str_radix(std::str::from_utf8(&hex).ok()?, 16).ok()?);
+                }
+                _ => bytes.push(b),
+            }
+        }
+        Some(bytes)
+    }
+}
+
+/// `s`の中で最初に現れる書式の正しいエンコード単語と、その開始位置を返す。
+fn find_encoded_word(s: &str) -> Option<(usize, EncodedWord<'_>)> {
+    let mut from = 0;
+    while let Some(offset) = s[from..].find("=?") {
+        let start = from + offset;
+        if let Some(word) = parse_encoded_word(&s[start..]) {
+            return Some((start, word));
+        }
+        from = start + 2;
+    }
+    None
+}
+
+fn parse_encoded_word(s: &str) -> Option<EncodedWord<'_>> {
+    let body = s.strip_prefix("=?")?;
+    let (charset, body) = body.split_once('?')?;
+    let (encoding, body) = body.split_once('?')?;
+    let end = body.find("?=")?;
+    let text = &body[..end];
+    let base64 = match encoding {
+        "B" | "b" => true,
+        "Q" | "q" => false,
+        _ => return None,
+    };
+    if charset.is_empty() || text.contains(|c: char| c.is_ascii_whitespace() || c == '?') {
+        return None;
+    }
+    // `body`は`s`の末尾部分なので、`s.len() - body.len()`がテキストの開始位置。
+    let len = s.len() - body.len() + end + 2;
+    // RFC2231の言語指定（`charset*lang`）は捨てる。
+    let charset = charset.split('*').next().unwrap_or(charset);
+    Some(EncodedWord { charset, base64, text, len })
 }
 
 /// Shift_JIS → EUC-JP → ISO-2022-JPの順に試し、変換エラーが無くU+FFFDも残らない
@@ -368,5 +503,47 @@ mod tests {
         let headers = parse_headers(&raw);
         // 復元できないので、mail-parserのlossy変換結果(U+FFFDを含む)がそのまま残る。
         assert!(headers.subject.as_deref().unwrap().contains('\u{FFFD}'));
+    }
+
+    /// ISO-2022-JPの件名を、エスケープシーケンス（1つ目の単語の末尾の`ESC`と2つ目の先頭の
+    /// `(B`）や2バイト文字（2つ目の末尾の`%`と3つ目の先頭の`W`）の途中で単語に分ける
+    /// 送信元（実際の監視アラートメールと同じ分け方。顧客名だけ置き換えてある）。
+    const SPLIT_ISO_2022_JP_SUBJECT: &[u8] = b"From: alert@example.com\r\n\
+        Subject: =?iso-2022-jp?Q?=5Bexample=5D=1B=24B0=2D0U=24N=24=22=24k=1B?=\r\n \
+        =?iso-2022-jp?Q?=28BSQL=1B=24B=24b=247=24=2F=24O7h=3AQ7O=25F=25s=25?=\r\n \
+        =?iso-2022-jp?Q?W=25l=21=3C=25HEy=24N99=3F7=24r8=21CN=1B=28B?=\r\n\
+        \r\n\
+        body";
+
+    #[test]
+    fn decodes_iso_2022_jp_subject_split_in_the_middle_of_escape_sequences() {
+        let expected = "[example]悪意のあるSQLもしくは決済系テンプレート等の更新を検知";
+        assert_eq!(parse_headers(SPLIT_ISO_2022_JP_SUBJECT).subject.as_deref(), Some(expected));
+        assert_eq!(parse_full(SPLIT_ISO_2022_JP_SUBJECT).headers.subject.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn joined_decoding_matches_word_by_word_decoding_for_well_formed_words() {
+        // 単語ごとに完結している件名（B/Qの混在、単語間の空白、前後の生テキスト）。
+        let value = b"Re: =?UTF-8?B?44OG44K544OI?= =?utf-8?q?=E4=BB=B6=E5=90=8D_A?= (2)";
+        assert_eq!(decode_joined_encoded_words(value).as_deref(), Some("Re: テスト件名 A (2)"));
+    }
+
+    #[test]
+    fn joined_decoding_gives_up_on_unknown_charsets_and_plain_values() {
+        assert_eq!(decode_joined_encoded_words(b"=?x-unknown?Q?abc?="), None);
+        assert_eq!(decode_joined_encoded_words(b"plain subject"), None);
+    }
+
+    /// 復号できないエンコード単語の件名が、Shift_JISとしての読み直しで
+    /// `=?...?=`の生の文字列に置き換わらないこと（以前の挙動）。
+    #[test]
+    fn does_not_replace_an_undecodable_encoded_subject_with_its_raw_text() {
+        // 1つ目の単語が2バイト文字の1バイト目で終わり、2つ目は続きではなくASCIIへ戻る
+        // エスケープなので、連結しても直らない。
+        let raw = b"Subject: =?iso-2022-jp?Q?=1B=24B0?= =?iso-2022-jp?Q?=1B=28B?=\r\n\r\nbody";
+        let subject = parse_headers(raw).subject.unwrap();
+        assert!(subject.contains('\u{FFFD}'), "expected mail-parser's lossy text, got: {subject}");
+        assert!(!subject.contains("=?"), "got the raw header text: {subject}");
     }
 }

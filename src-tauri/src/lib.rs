@@ -1238,7 +1238,7 @@ fn search_messages(
 /// メールボックスの規模次第で数分かかり、その間共有の接続を握り続けると、一覧表示・
 /// フォルダ件数・本文表示などがロック待ちで止まってアプリ全体が固まる（以前は
 /// `read_conn`を握りっぱなしにしていて実際に固まった）。WALモードなので別接続の
-/// 書き込み（`mark_indexed`/`update_preview`）と`write_conn`側の同期は共存できる。
+/// 書き込み（`mark_indexed`/`update_reparsed`）と`write_conn`側の同期は共存できる。
 #[tauri::command]
 async fn reindex_all(app: AppHandle) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
