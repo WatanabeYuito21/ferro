@@ -463,7 +463,12 @@
   （「今すぐ更新」/「後で」）で知らせる。自動確認ではダウンロード・インストールはしない。
   最終確認時刻はlocalStorage（`ferro.lastUpdateCheck`）。通信エラー時は黙って諦め、
   時刻を更新しないので1時間後に再試行する。「後で」で閉じても、翌日の確認でまだ
-  新バージョンがあれば再表示する。更新元は
+  新バージョンがあれば再表示する。
+  **v0.0.46で修正**: `updater.status`/`error`はモジュール状態で設定画面の手動確認と共有しており、
+  以前の手動確認の「最新バージョンです。」が残ったまま自動確認が新バージョンを見つけると、
+  バナーが「最新バージョンです。」の文言で「今すぐ更新/後で」を出していた（実際に踏んだ）。
+  確認結果が出るたびに`setPendingUpdate`で両方を消し、バナーは`busy`（インストール中）の間だけ
+  `status`を出す。更新元は
   `https://github.com/WatanabeYuito21/ferro/releases/latest/download/latest.json`
   （publicリポジトリなので認証不要）。`release.yml`のreleaseジョブが各プラットフォームの
   `.sig`（`createUpdaterArtifacts: true`でビルド時に生成）から`latest.json`を`jq`で組み立てて

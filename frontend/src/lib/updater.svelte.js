@@ -59,6 +59,12 @@ function setPendingUpdate(update) {
     ? { version: update.version, currentVersion: update.currentVersion }
     : null
   updater.dismissed = false
+  // 前回の確認結果の文言（「最新バージョンです。」や失敗のエラー）はモジュール状態に
+  // 残り続けるので、新しい結果が出たら消す。消さないと、以前の手動確認で
+  // 「最新バージョンです。」が入ったまま自動確認が新バージョンを見つけた時に、
+  // バナーがその文言のまま「今すぐ更新」を出していた（v0.0.45で実際に踏んだ）。
+  updater.status = ''
+  updater.error = ''
 }
 
 async function install(update) {
