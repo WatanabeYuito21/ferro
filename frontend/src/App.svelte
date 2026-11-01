@@ -932,7 +932,8 @@
       {#if updater.available && !updater.dismissed}
         <div class="update-banner" role="status">
           <span class="update-banner-text">
-            {#if updater.busy || updater.status}
+            <!-- statusは設定画面の手動確認とも共有なので、バナーではインストール中だけ出す -->
+            {#if updater.busy}
               {updater.status}
             {:else if updater.error}
               更新に失敗しました: {updater.error}
