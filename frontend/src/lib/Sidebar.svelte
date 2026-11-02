@@ -20,6 +20,10 @@
     onCreateLabel = async () => {},
     onDeleteLabel = async () => {},
     onOpenSettings = () => {},
+    // 右クリック（メニューはApp.svelteが出す）。フォルダはキー、ラベルは行、保存した検索は添字を渡す。
+    onFolderContextMenu = () => {},
+    onLabelContextMenu = () => {},
+    onSavedSearchContextMenu = () => {},
     // 折りたたみ中は、開く・設定のボタンだけの細い帯にする（状態はApp.svelteが持つ）。
     collapsed = false,
     onToggleCollapsed = () => {},
@@ -44,6 +48,14 @@
 
   // 検索中は通常のフォルダ/ラベルを選択中として出さない（保存した検索の方を出す）。
   let searching = $derived(activeSavedQuery !== null)
+
+  // ブラウザ標準のメニューの代わりにApp.svelte側のメニューを出す。
+  function contextMenu(handler, ...args) {
+    return (event) => {
+      event.preventDefault()
+      handler(event, ...args)
+    }
+  }
 
   function unreadLabel(count) {
     return count >= 1000 ? '999+' : String(count)
@@ -98,6 +110,7 @@
         class="row"
         class:active={!searching && selectedFolder === folder.key && selectedLabelId === null}
         onclick={() => onSelectFolder(folder.key)}
+        oncontextmenu={contextMenu(onFolderContextMenu, folder.key)}
       >
         <span class="dot" class:dot-visible={!searching && selectedFolder === folder.key && selectedLabelId === null}></span>
         <span class="name">{folder.name}</span>
@@ -112,7 +125,12 @@
     </div>
     <div class="labels">
       {#each savedSearches as search, index (search.name)}
-        <div class="row label-row" class:active={activeSavedQuery === search.query}>
+        <div
+          class="row label-row"
+          class:active={activeSavedQuery === search.query}
+          role="group"
+          oncontextmenu={contextMenu(onSavedSearchContextMenu, index)}
+        >
           <button type="button" class="row-main" title={search.query} onclick={() => onSelectSavedSearch(index)}>
             <span class="search-icon" aria-hidden="true">⌕</span>
             <span class="name">{search.name}</span>
@@ -160,7 +178,12 @@
 
   <div class="labels">
     {#each labels as label (label.id)}
-      <div class="row label-row" class:active={!searching && selectedLabelId === label.id}>
+      <div
+        class="row label-row"
+        class:active={!searching && selectedLabelId === label.id}
+        role="group"
+        oncontextmenu={contextMenu(onLabelContextMenu, label)}
+      >
         <button type="button" class="row-main" onclick={() => onSelectLabel(label.id)}>
           <span class="dot dot-visible" style="background: {label.color};"></span>
           <span class="name">{label.name}</span>

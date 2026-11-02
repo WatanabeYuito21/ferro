@@ -9,6 +9,15 @@
   import KeyboardHelp from './lib/KeyboardHelp.svelte'
   import BulkActionBar from './lib/BulkActionBar.svelte'
   import AdvancedSearch from './lib/AdvancedSearch.svelte'
+  import ContextMenu from './lib/ContextMenu.svelte'
+  import { save } from '@tauri-apps/plugin-dialog'
+  import {
+    menuPosition,
+    messageMenuItems,
+    folderMenuItems,
+    labelMenuItems,
+    savedSearchMenuItems,
+  } from './lib/contextMenus.js'
   import { applyPatch, neighborId, clickSelection, toggleChecked } from './lib/messageView.js'
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
@@ -128,8 +137,15 @@
   // 「すべて既読にする」（検索欄の横のボタンか`R`）。確かめてから行う。
   const FOLDER_NAMES = { inbox: '受信箱', starred: 'スター付き', snoozed: 'スヌーズ', archive: 'アーカイブ', trash: 'ゴミ箱' }
   let confirmingMarkAll = false
-  let markAllStatus = ''
-  let markAllStatusTimer = null
+  // 検索欄の下に少しの間だけ出す結果の知らせ（「N件を既読にしました」「保存しました」等）。
+  let statusMessage = ''
+  let statusMessageTimer = null
+
+  function flashStatus(text) {
+    statusMessage = text
+    clearTimeout(statusMessageTimer)
+    statusMessageTimer = setTimeout(() => (statusMessage = ''), 4000)
+  }
   $: markAllScope =
     searchResults !== null
       ? '検索結果に表示中のメッセージ'
@@ -153,9 +169,7 @@
         )
         messageList?.markAllReadLocally()
       }
-      markAllStatus = count > 0 ? `${count}件を既読にしました` : '未読はありませんでした'
-      clearTimeout(markAllStatusTimer)
-      markAllStatusTimer = setTimeout(() => (markAllStatus = ''), 4000)
+      flashStatus(count > 0 ? `${count}件を既読にしました` : '未読はありませんでした')
       refreshFolderCounts()
     } catch (e) {
       error = String(e)
@@ -374,6 +388,13 @@
       return
     }
 
+    // 右クリックメニューをキーボードから（メニューが開いている間のキーは`ContextMenu`が受け取る）。
+    if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+      openMenuForSelection()
+      event.preventDefault()
+      return
+    }
+
     // 複数選択中は、本文に対する操作の代わりに選択中の全メッセージへ一括で行う。
     if (checkedIds.size > 0 && ['e', 's', 'u', '#', 'Delete'].includes(event.key)) {
       runBulkFromKey(event.key)
@@ -581,11 +602,10 @@
   }
 
   // 本文を開かずに選んでいる行への`e`/`s`/`u`/`#`（「選択しただけで本文を開く」がオフの時）。
-  // 本文の操作ボタンと同じく1件ずつ切り替え、結果は`handleMessagePatched`で行に当てる
-  // （表示中のフォルダから外れたら次の行を選ぶ）。
-  async function runOnSelected(key) {
+  // 本文の操作ボタンと同じく1件ずつ切り替える。
+  function runOnSelected(key) {
     const message = visibleItems().find((m) => m.id === selectedMessageId)
-    if (!message || bulkBusy) return
+    if (!message) return
     const action = {
       e: { kind: 'archive', value: !message.is_archived },
       s: { kind: 'flag', value: !message.is_flagged },
@@ -593,16 +613,160 @@
       '#': { kind: 'delete' },
       Delete: { kind: 'delete' },
     }[key]
-    if (!action || (action.kind === 'delete' && message.is_deleted)) return
+    if (action) runOnMessage(message, action)
+  }
+
+  // 1件への操作（`bulk_update`に1件だけ渡す）。結果は`handleMessagePatched`で行に当て
+  // （表示中のフォルダから外れて、それが選んでいる行なら次の行を選ぶ）、本文に表示中なら
+  // 本文の表示も合わせる。
+  async function runOnMessage(message, action) {
+    if (bulkBusy || (action.kind === 'delete' && message.is_deleted)) return
     bulkBusy = true
     try {
       await invoke('bulk_update', { messageIds: [message.id], action })
-      handleMessagePatched(message.id, bulkPatch(action))
+      const patch = bulkPatch(action)
+      const changes = typeof patch === 'function' ? patch(message) : patch
+      handleMessagePatched(message.id, changes)
+      if (detailShown && selectedMessageId === message.id) messageDetail?.applyExternalChange(changes)
     } catch (e) {
       error = String(e)
     } finally {
       bulkBusy = false
     }
+  }
+
+  // 右クリックメニュー（`ContextMenu.svelte`。中身は`contextMenus.js`が組み立てる）。
+  // `targetIds`はメッセージの行のメニューで対象になっている行（一覧で枠を付ける）。
+  const NO_TARGETS = new Set()
+  let contextMenu = null
+  $: contextTargetIds = contextMenu?.targetIds ?? NO_TARGETS
+
+  function showMenu(position, items, targetIds = NO_TARGETS) {
+    if (items.length > 0) contextMenu = { ...position, items, targetIds }
+  }
+
+  // メッセージの行のメニュー。チェック済みの行なら選択中の全行が対象（一括操作バーと同じ）、
+  // そうでなければその行だけ（選択も開いている本文も変えない）。
+  function openMessageMenu(position, message) {
+    const multi = checkedIds.has(message.id)
+    const targets = multi ? visibleItems().filter((m) => checkedIds.has(m.id)) : [message]
+    showMenu(
+      position,
+      messageMenuItems({ messages: targets, labels, run: (command) => runMessageCommand(targets, command, multi) }),
+      new Set(targets.map((m) => m.id)),
+    )
+  }
+
+  // Shift+F10/アプリケーションキー: 選んでいる行（複数選択中ならその1つ）のメニューを行の位置に出す。
+  function openMenuForSelection() {
+    const items = visibleItems()
+    const id =
+      checkedIds.size > 0 && !checkedIds.has(selectedMessageId)
+        ? items.find((m) => checkedIds.has(m.id))?.id
+        : selectedMessageId
+    const message = items.find((m) => m.id === id)
+    if (!message) return
+    const row = document.querySelector(`[data-message-id="${id}"], [data-search-result-id="${id}"]`)
+    const position = row
+      ? menuPosition(null, row)
+      : { x: window.innerWidth / 2, y: window.innerHeight / 3 }
+    openMessageMenu(position, message)
+  }
+
+  async function runMessageCommand(targets, command, multi) {
+    const message = targets[0]
+    switch (command.type) {
+      case 'bulk':
+        // 複数なら一括操作バーと同じ経路（選択は解除される）。
+        if (multi) runBulk(command.action)
+        else runOnMessage(message, command.action)
+        break
+      case 'open':
+        openMessage(message.id)
+        break
+      case 'searchFrom':
+        selectMessage(null)
+        runAdvancedSearch(`from:${message.from_addr}`)
+        break
+      case 'copyFrom':
+        try {
+          await navigator.clipboard.writeText(message.from_addr)
+          flashStatus(`${message.from_addr} をコピーしました`)
+        } catch (e) {
+          error = String(e)
+        }
+        break
+      case 'saveEml':
+        saveMessageEml(message.id)
+        break
+    }
+  }
+
+  // 本文の「.emlとして保存…」と同じ（既定のファイル名は件名から作ったものを使う）。
+  async function saveMessageEml(id) {
+    try {
+      const detail = await invoke('get_message_detail', { messageId: id })
+      const destination = await save({
+        defaultPath: detail.eml_filename,
+        filters: [{ name: 'メール (.eml)', extensions: ['eml'] }],
+      })
+      if (!destination) return
+      await invoke('save_message_eml', { messageId: id, destinationPath: destination })
+      flashStatus('.emlを保存しました')
+    } catch (e) {
+      error = String(e)
+    }
+  }
+
+  function openFolderMenu(event, key) {
+    showMenu(
+      menuPosition(event),
+      folderMenuItems({
+        name: FOLDER_NAMES[key],
+        onOpen: () => {
+          clearSearch()
+          selectFolder(key)
+        },
+        // 確認は検索欄の下の「すべて既読」と同じものを出す（そのフォルダへ移ってから）。
+        onMarkAllRead: () => {
+          clearSearch()
+          selectFolder(key)
+          confirmingMarkAll = true
+        },
+      }),
+    )
+  }
+
+  function openLabelMenu(event, label) {
+    showMenu(
+      menuPosition(event),
+      labelMenuItems({
+        label,
+        onOpen: () => {
+          clearSearch()
+          selectLabel(label.id)
+        },
+        onMarkAllRead: () => {
+          clearSearch()
+          selectLabel(label.id)
+          confirmingMarkAll = true
+        },
+        onDelete: () => deleteLabel(label.id),
+      }),
+    )
+  }
+
+  function openSavedSearchMenu(event, index) {
+    const search = savedSearches[index]
+    if (!search) return
+    showMenu(
+      menuPosition(event),
+      savedSearchMenuItems({
+        search,
+        onOpen: () => openSavedSearch(index),
+        onDelete: () => deleteSavedSearch(index),
+      }),
+    )
   }
 
   // 「新着があります」バナーがクリックされた時だけ、実際に一覧を最初のページから
@@ -898,6 +1062,18 @@
   <KeyboardHelp onClose={() => (showKeyboardHelp = false)} />
 {/if}
 
+{#if contextMenu}
+  <!-- 別の行で開き直したら位置・項目を最初から計算し直すよう作り直す -->
+  {#key contextMenu}
+    <ContextMenu
+      x={contextMenu.x}
+      y={contextMenu.y}
+      items={contextMenu.items}
+      onClose={() => (contextMenu = null)}
+    />
+  {/key}
+{/if}
+
 <main>
   {#if error}
     <p class="error top-error">{error}</p>
@@ -924,6 +1100,9 @@
       onCreateLabel={createLabel}
       onDeleteLabel={deleteLabel}
       onOpenSettings={() => (currentView = 'settings')}
+      onFolderContextMenu={openFolderMenu}
+      onLabelContextMenu={openLabelMenu}
+      onSavedSearchContextMenu={openSavedSearchMenu}
       collapsed={sidebarCollapsed}
       onToggleCollapsed={toggleSidebar}
     />
@@ -1052,8 +1231,8 @@
                 <button type="button" on:click={() => (confirmingMarkAll = false)}>やめる</button>
               </div>
             {/if}
-            {#if markAllStatus}
-              <p class="inline-confirm" role="status">{markAllStatus}</p>
+            {#if statusMessage}
+              <p class="inline-confirm" role="status">{statusMessage}</p>
             {/if}
             {#if showAdvancedSearch}
               <AdvancedSearch
@@ -1103,10 +1282,12 @@
                           class:selected={message.id === selectedMessageId}
                           class:checked={checkedIds.has(message.id)}
                           class:unread={!message.is_read}
+                          class:context-target={contextTargetIds.has(message.id)}
                           data-search-result-id={message.id}
                           role="button"
                           tabindex="0"
                           on:click={(e) => onSearchResultClick(message.id, e)}
+                          on:contextmenu|preventDefault={(e) => openMessageMenu(menuPosition(e), message)}
                           on:dblclick={(e) => !(e.shiftKey || e.ctrlKey || e.metaKey) && openMessage(message.id)}
                           on:keydown={(e) => e.key === 'Enter' && openMessage(selectedMessageId ?? message.id)}
                         >
@@ -1141,10 +1322,12 @@
                       selectedId={selectedMessageId}
                       {checkedIds}
                       {checkAnchor}
+                      {contextTargetIds}
                       {colorRules}
                       onSelect={selectMessage}
                       onOpen={openMessage}
                       onCheck={setChecked}
+                      onContextMenu={(e, message) => openMessageMenu(menuPosition(e), message)}
                     />
                   {/key}
                 {/if}
@@ -1404,6 +1587,10 @@
   }
   .result-row.checked {
     background: var(--accent-soft-bg);
+  }
+  .result-row.context-target {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .result-row {
     user-select: none;

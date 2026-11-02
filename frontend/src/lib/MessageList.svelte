@@ -15,16 +15,20 @@
   // （「選択しただけで本文を開く」設定のときは、App.svelte側で選ぶと同時に開く）。
   // `checkedIds`/`checkAnchor`は複数選択（一括操作用）の状態で、App.svelteが持つ
   // （`messageView.js`の`clickSelection`参照）。変わったら`onCheck`で知らせる。
+  // `onContextMenu(event, message)`は行の右クリック。メニューはApp.svelteが出し、
+  // その対象の行を`contextTargetIds`で受け取って枠を付ける（どの行に効くか分かるように）。
   let {
     folder = 'inbox',
     labelId = null,
     selectedId = null,
     checkedIds = new Set(),
     checkAnchor = null,
+    contextTargetIds = new Set(),
     colorRules = [],
     onSelect = () => {},
     onOpen = () => {},
     onCheck = () => {},
+    onContextMenu = () => {},
   } = $props()
 
   function onRowClick(id, event) {
@@ -177,10 +181,16 @@
           class:unread={!message.is_read}
           class:selected={message.id === selectedId}
           class:checked={checkedIds.has(message.id)}
+          class:context-target={contextTargetIds.has(message.id)}
+          data-message-id={message.id}
           style="height: {ROW_HEIGHT}px"
           role="button"
           tabindex="0"
           onclick={(e) => onRowClick(message.id, e)}
+          oncontextmenu={(e) => {
+            e.preventDefault()
+            onContextMenu(e, message)
+          }}
           ondblclick={(e) => !(e.shiftKey || e.ctrlKey || e.metaKey) && onOpen(message.id)}
           onkeydown={(e) => e.key === 'Enter' && onOpen(selectedId ?? message.id)}
         >
@@ -272,6 +282,10 @@
   }
   .row.checked {
     background: var(--accent-soft-bg);
+  }
+  .row.context-target {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
   .row {
     user-select: none;

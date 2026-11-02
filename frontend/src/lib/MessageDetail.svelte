@@ -140,6 +140,18 @@
     ['source', 'ソース'],
   ]
 
+  // 一覧の右クリックメニュー等、本文の外で表示中のメッセージの状態を変えた時に、
+  // 表示（スター・既読・ラベル等）を合わせる。既読/未読を変えたら「既読にするまでの時間」の
+  // 待ちも止める（直後にタイマーで既読に戻さないように）。
+  export function applyExternalChange(patch) {
+    if (!detail) return
+    if ('is_read' in patch && readTimer) {
+      clearTimeout(readTimer)
+      readTimer = null
+    }
+    detail = { ...detail, ...patch }
+  }
+
   // 以下の`export`した操作は、ツールバーのボタンとApp.svelteのキーボード操作の両方から呼ぶ。
 
   // 本文 → ヘッダー → ソース → 本文 の順に切り替える。
