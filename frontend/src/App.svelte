@@ -18,6 +18,7 @@
     labelMenuItems,
     savedSearchMenuItems,
   } from './lib/contextMenus.js'
+  import { loadSidebarWidth, saveSidebarWidth } from './lib/sidebarWidth.js'
   import { applyPatch, neighborId, clickSelection, toggleChecked } from './lib/messageView.js'
   import { matchColor } from './lib/colorRules.js'
   import { formatDate } from './lib/formatDate.js'
@@ -123,6 +124,13 @@
     } catch {
       // 同上
     }
+  }
+
+  // サイドバーの幅。ドラッグ中は表示だけ変え、離した時（キー操作・ダブルクリックは都度）に保存する。
+  let sidebarWidth = loadSidebarWidth()
+  function resizeSidebar(width, done) {
+    sidebarWidth = width
+    if (done) saveSidebarWidth(width)
   }
   // `g`を押した直後なら、次のキーでフォルダへ移動する（`g`→`i`で受信箱、等）。
   let pendingGoTo = false
@@ -1105,6 +1113,8 @@
       onSavedSearchContextMenu={openSavedSearchMenu}
       collapsed={sidebarCollapsed}
       onToggleCollapsed={toggleSidebar}
+      width={sidebarWidth}
+      onResize={resizeSidebar}
     />
 
     <div class="main-content">
