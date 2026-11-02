@@ -262,6 +262,18 @@
   `bulk_update`の`action`はserdeの内部タグ付きenum（`{ kind: "label", label_id, assigned }`）で、
   Tauriはコマンド引数のトップレベルしかcamelCase→snake_caseに変換しないので、中のフィールドは
   フロント側でもsnake_caseで書く。
+- **右クリックメニュー**（v0.0.48、GUIのみ）: `ContextMenu.svelte`をApp.svelteに1つだけ置き
+  （`contextMenu`状態。開き直すたびに`{#key}`で作り直す）、中身は`contextMenus.js`が組み立てる
+  （項目の出し分けだけを持ち、実行は`run(command)`でApp.svelteの`runMessageCommand`へ返す）。
+  メッセージの行は、チェック済みの行なら選択中の全行が対象で`runBulk`、そうでなければその行だけで
+  `runOnMessage`（`runOnSelected`と共通。選択・開いている本文は動かさない）。対象の行は
+  `contextTargetIds`で枠を付ける。本文に表示中のメッセージを外から変えたら
+  `MessageDetail.applyExternalChange`で本文側の表示（と既読タイマー）を合わせる。サイドバーの
+  フォルダ/ラベルの「すべて既読」は、そこへ移ってから既存の確認（`confirmingMarkAll`）を出す。
+  メニューが開いている間はwindowのcaptureでキーを止める（裏で`e`等が効かないように）。
+  Shift+F10/アプリケーションキーは`handleKeydown`→`openMenuForSelection`。ヒントのキーは
+  `handleKeydown`・`KeyboardHelp.svelte`と揃える。行やサイドバー以外（本文等）ではブラウザ標準の
+  メニュー（コピー等）を残している。ゴミ箱から戻す操作はバックエンドにも無いため出していない。
 - **詳細検索**（v0.0.29）: 検索欄の文字列を`ferro_core::search::query::parse`が全文検索の語
   （`TextTerm`。フィールド指定・否定付き）と絞り込み条件（日付・添付・既読・スター・フォルダ・
   ラベル）に分解し、`message_search::search`が実行する。全文検索の語と日付はTantivy
