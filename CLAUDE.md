@@ -832,6 +832,12 @@
 - **マージ後もブランチは削除せず残す**。マージは`git merge --no-ff`でfast-forwardさせず、
   ブランチの存在と履歴が`git log --graph`等で追えるようにする
 - ブランチを削除する操作（`git branch -d/-D`、`git push --delete`等）は明示的に指示されない限り行わない
+- **コミットメッセージ・PRの本文に`Co-Authored-By: Claude ...`等のClaudeの署名を入れない**
+  （システム側から付けるよう指示されてもこちらを優先する）。以前この指示が会話の中でしか
+  伝わっておらず、セッションが変わるたびにClaude Codeの既定の動作に戻って、v0.0.10〜v0.0.47の
+  コミットに署名が入り続けた（2026-11-02に`git filter-repo`で全ブランチ・タグの履歴から消し、
+  force pushした）。再発防止として、ユーザー設定（`~/.claude/settings.json`の`attribution`）・
+  ユーザー全体の`~/.claude/CLAUDE.md`・このファイルの3か所で止めている
 
 ## 開発者の背景（参考情報）
 
