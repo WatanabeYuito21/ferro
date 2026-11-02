@@ -41,6 +41,7 @@
     labelRules = [],
     labelRulesConfigPath = '',
     onAddLabelRule = async () => {},
+    onCreateLabel = async () => {},
     onRemoveLabelRule = async () => {},
     onReloadLabelRules = async () => {},
     onApplyLabelRulesNow = async () => {},
@@ -875,6 +876,7 @@
         rules={labelRules}
         configPath={labelRulesConfigPath}
         onAdd={onAddLabelRule}
+        {onCreateLabel}
         onRemove={onRemoveLabelRule}
         onReload={onReloadLabelRules}
         onApplyNow={onApplyLabelRulesNow}

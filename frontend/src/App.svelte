@@ -972,6 +972,7 @@
           {labelRules}
           {labelRulesConfigPath}
           onAddLabelRule={addLabelRule}
+          onCreateLabel={createLabel}
           onRemoveLabelRule={removeLabelRule}
           onReloadLabelRules={refreshLabelRules}
           onApplyLabelRulesNow={applyLabelRulesNow}

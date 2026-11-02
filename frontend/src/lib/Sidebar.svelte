@@ -2,6 +2,8 @@
   // フォルダ(受信箱/スター付き/スヌーズ/アーカイブ/ゴミ箱)とラベルの一覧。
   // 状態(件数・選択中フォルダ等)はApp.svelte側で持ち、ここは表示とラベル作成
   // フォームのローカル状態(未送信の入力内容)だけを持つ。
+  import { LABEL_COLORS } from './labelColors.js'
+
   let {
     folderCounts = { inbox: 0, starred: 0, snoozed: 0, archive: 0, trash: 0 },
     labels = [],
@@ -30,9 +32,6 @@
     { key: 'archive', name: 'アーカイブ' },
     { key: 'trash', name: 'ゴミ箱' },
   ]
-
-  // モックアップのラベル配色から抜粋したプリセット（自由入力ではなくここから選ぶ）。
-  const LABEL_COLORS = ['#C08A2E', '#7E9E86', '#8D9FC4', '#C58C82', '#5B6E92', '#96701F']
 
   let creatingLabel = $state(false)
   let newLabelName = $state('')

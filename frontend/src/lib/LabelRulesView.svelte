@@ -4,18 +4,26 @@
   // こちらは表示だけでなく実際にDBへラベルを付与する機能なので「今すぐ適用」
   // （保持期間の「今すぐ整理する」と同じ思想）も持つ。
   import { openPath } from '@tauri-apps/plugin-opener'
+  import { LABEL_COLORS } from './labelColors.js'
 
   let {
     labels = [],
     rules = [],
     configPath = '',
     onAdd = async () => {},
+    onCreateLabel = async () => {},
     onRemove = async () => {},
     onReload = async () => {},
     onApplyNow = async () => {},
   } = $props()
 
+  // ラベルの選択肢で「新しいラベルを作成…」を選んだ時の値（ラベル名にNULは入らないので
+  // 既存のラベル名と衝突しない）。ラベルはサイドバーでしか作れず、まだ1つも無いと
+  // 選択肢が「付けない」だけになっていたため、ルールの追加と同時に作れるようにした。
+  const NEW_LABEL = '\u0000new'
+
   let labelName = $state('')
+  let newLabelName = $state('')
   let fromContains = $state('')
   let subjectContains = $state('')
   let bodyContains = $state('')
@@ -78,8 +86,23 @@
     formError = ''
     submitting = true
     try {
+      let ruleLabel = labelName
+      if (labelName === NEW_LABEL) {
+        ruleLabel = newLabelName.trim()
+        // 同じ名前のラベルが既にあればそれを使う（labels.nameはUNIQUE）。
+        if (!labels.some((label) => label.name === ruleLabel)) {
+          await onCreateLabel({
+            name: ruleLabel,
+            color: LABEL_COLORS[labels.length % LABEL_COLORS.length],
+          })
+        }
+        // ルールの追加に失敗して再送しても、ラベルを二重に作ろうとしないように
+        // 作ったラベルを選んだ状態にしておく。
+        labelName = ruleLabel
+        newLabelName = ''
+      }
       await onAdd({
-        labelName,
+        labelName: ruleLabel,
         fromContains: fromContains.trim() || undefined,
         subjectContains: subjectContains.trim() || undefined,
         bodyContains: bodyContains.trim() || undefined,
@@ -107,8 +130,10 @@
   // From/Subject/Body/添付有無のいずれか1つも指定していない条件は送信できないように
   // する（Rust側の`MessageFilter::is_empty`と同じ判定をフォームでも先に行う）。
   // ラベルか動作のどちらかも必要（Rust側の`LabelRule::has_effect`と同じ判定）。
+  // 「新しいラベルを作成…」を選んだら名前の入力も必要。
   let canSubmit = $derived(
-    (labelName !== '' || markRead || archive || star || skipNotification) &&
+    (labelName === NEW_LABEL ? newLabelName.trim() !== '' : true) &&
+      (labelName !== '' || markRead || archive || star || skipNotification) &&
       (fromContains.trim() !== '' ||
         subjectContains.trim() !== '' ||
         bodyContains.trim() !== '' ||
@@ -145,8 +170,15 @@
         {#each labels as label (label.id)}
           <option value={label.name}>{label.name}</option>
         {/each}
+        <option value={NEW_LABEL}>＋ 新しいラベルを作成…</option>
       </select>
     </label>
+    {#if labelName === NEW_LABEL}
+      <label class="field">
+        <span>新しいラベル名</span>
+        <input bind:value={newLabelName} placeholder="例: 請求書" />
+      </label>
+    {/if}
     <label class="field">
       <span>差出人</span>
       <input bind:value={fromContains} placeholder="例: invoice@" />
