@@ -374,6 +374,13 @@
   この端末だけの見た目の好みのため。更新確認の時刻と同じ扱い）。`[`は設定画面でも効く。
   TUIは`[`でフォルダのペインを隠し（`App::show_sidebar`、保存はしない）、その間はTabで
   フォルダのペインへ移らない。
+  v0.0.49でGUIのサイドバーの**幅**を変えられるようにした: `Sidebar.svelte`の右端に
+  幅0（左右の負のmarginで境界線にかぶせる）のつまみ`.resize-handle`（`role="separator"`）を置き、
+  ポインタをcaptureしてドラッグ中は`onResize(幅, false)`、離した時に`true`。←/→で16pxずつ、
+  Home/End、ダブルクリックで既定の220px。幅（160〜480px）はApp.svelteが持ち、保存は折りたたみと
+  同じくlocalStorage（`ferro.sidebarWidth`。`frontend/src/lib/sidebarWidth.js`）。折りたたみ中は
+  つまみを出さない。あわせて、ラベル・保存した検索の行（`div.row`）が`width: 100%`＋paddingで
+  はみ出し、サイドバーに常に横スクロールバーが出ていたのを`box-sizing: border-box`で直した。
 - **検索語のハイライト**（`ferro_core::search::highlight`、v0.0.37）: 強調する語は
   `query::parse`の全文検索の語のうち否定でないもの（`terms`。GUIは`highlight_terms`コマンド）。
   一致の規則は検索と同じく大文字小文字を無視した部分一致で、同じ位置からなら長い語を優先

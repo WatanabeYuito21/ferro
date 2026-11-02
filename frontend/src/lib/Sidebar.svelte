@@ -3,6 +3,12 @@
   // 状態(件数・選択中フォルダ等)はApp.svelte側で持ち、ここは表示とラベル作成
   // フォームのローカル状態(未送信の入力内容)だけを持つ。
   import { LABEL_COLORS } from './labelColors.js'
+  import {
+    SIDEBAR_DEFAULT_WIDTH,
+    SIDEBAR_MIN_WIDTH,
+    SIDEBAR_MAX_WIDTH,
+    clampSidebarWidth,
+  } from './sidebarWidth.js'
 
   let {
     folderCounts = { inbox: 0, starred: 0, snoozed: 0, archive: 0, trash: 0 },
@@ -27,7 +33,51 @@
     // 折りたたみ中は、開く・設定のボタンだけの細い帯にする（状態はApp.svelteが持つ）。
     collapsed = false,
     onToggleCollapsed = () => {},
+    // 幅（App.svelteが持ち、localStorageに覚える）。右端のつまみのドラッグ・矢印キーで変え、
+    // `onResize(幅, 確定したか)`で伝える。ドラッグ中はfalse、離した時にtrue。
+    width = SIDEBAR_DEFAULT_WIDTH,
+    onResize = () => {},
   } = $props()
+
+  const RESIZE_STEP = 16
+
+  // ドラッグ開始時のポインタ位置と幅（ドラッグしていなければnull）。
+  let dragStart = $state(null)
+
+  function startResize(event) {
+    if (event.button !== 0) return
+    event.preventDefault()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragStart = { x: event.clientX, width }
+    // ドラッグ中に一覧や本文の文字が選択されないように。
+    document.body.classList.add('resizing-sidebar')
+  }
+
+  function moveResize(event) {
+    if (!dragStart) return
+    onResize(clampSidebarWidth(dragStart.width + event.clientX - dragStart.x), false)
+  }
+
+  function endResize() {
+    if (!dragStart) return
+    dragStart = null
+    document.body.classList.remove('resizing-sidebar')
+    onResize(width, true)
+  }
+
+  function resizeByKey(event) {
+    const next = {
+      ArrowLeft: width - RESIZE_STEP,
+      ArrowRight: width + RESIZE_STEP,
+      Home: SIDEBAR_MIN_WIDTH,
+      End: SIDEBAR_MAX_WIDTH,
+    }[event.key]
+    if (next === undefined) return
+    // アプリのショートカット（windowで受けている）へ渡さない。
+    event.preventDefault()
+    event.stopPropagation()
+    onResize(clampSidebarWidth(next), true)
+  }
 
   const FOLDERS = [
     { key: 'inbox', name: '受信箱' },
@@ -93,7 +143,7 @@
   >
 </aside>
 {:else}
-<aside class="sidebar">
+<aside class="sidebar" style="width: {width}px;">
   <div class="sidebar-top">
     <button
       type="button"
@@ -201,6 +251,27 @@
 
   <button type="button" class="settings-link" onclick={onOpenSettings}>設定</button>
 </aside>
+<!-- 右端の境界線に重ねた幅変更のつまみ（場所は取らない）。ダブルクリックで既定の幅へ戻す。 -->
+<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+<div
+  class="resize-handle"
+  class:dragging={dragStart !== null}
+  role="separator"
+  aria-orientation="vertical"
+  aria-label="サイドバーの幅"
+  aria-valuenow={width}
+  aria-valuemin={SIDEBAR_MIN_WIDTH}
+  aria-valuemax={SIDEBAR_MAX_WIDTH}
+  tabindex="0"
+  title="ドラッグで幅を変更（ダブルクリックで元の幅に戻す）"
+  onpointerdown={startResize}
+  onpointermove={moveResize}
+  onpointerup={endResize}
+  onpointercancel={endResize}
+  onlostpointercapture={endResize}
+  ondblclick={() => onResize(SIDEBAR_DEFAULT_WIDTH, true)}
+  onkeydown={resizeByKey}
+></div>
 {/if}
 
 <style>
@@ -221,6 +292,36 @@
     padding: 12px 6px;
     align-items: center;
     overflow: hidden;
+  }
+  /* 幅0の位置に置き、左右3pxずつ境界線にかぶせる（レイアウト上は場所を取らない）。 */
+  .resize-handle {
+    flex: none;
+    position: relative;
+    z-index: 2;
+    width: 7px;
+    margin: 0 -4px 0 -3px;
+    cursor: col-resize;
+    touch-action: none;
+    outline: none;
+  }
+  .resize-handle::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 3px;
+    background: transparent;
+    transition: background 0.12s;
+  }
+  .resize-handle:hover::after,
+  .resize-handle:focus-visible::after,
+  .resize-handle.dragging::after {
+    background: var(--accent);
+  }
+  :global(body.resizing-sidebar) {
+    cursor: col-resize;
+    user-select: none;
   }
   .sidebar-top {
     display: flex;
@@ -266,6 +367,8 @@
     text-align: left;
     font: inherit;
     width: 100%;
+    /* ラベル・保存した検索の行はdivなので、指定しないとpadding分はみ出して横スクロールバーが出る */
+    box-sizing: border-box;
   }
   .row:hover {
     background: var(--surface-subtle);
