@@ -12,12 +12,21 @@
 //! エラーは握りつぶす（呼び出し側でmatch/unwrapする必要がない）。
 //!
 //! パスワード等の秘匿情報は絶対にログへ書かない。
+//!
+//! 追記の前にファイルが`MAX_LOG_BYTES`（1MB）以上になっていれば`ferro.log.1`へ
+//! 名前を変えてから新しく書き始める（既存の`ferro.log.1`は上書きし、1世代だけ残す）。
+//! 合計で約2MBを超えて増え続けない。CLI/TUI/GUIが同時に書いても毎回
+//! open→追記→closeなので、競合しても1回余分に回すか回し損ねる程度で害は無い。
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::db::now_unix;
 use crate::paths::log_path;
+
+/// これ以上の大きさになったら`ferro.log.1`へ回す。
+const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 /// 診断ログに1行追記する。書き込み失敗（ディスクフルや権限エラー等）は
 /// 無視する。
@@ -26,15 +35,31 @@ pub fn log_line(line: &str) {
     if cfg!(test) {
         return;
     }
-    let path = log_path();
+    let ts = format_utc_datetime(now_unix());
+    append_line(&log_path(), &format!("[{ts}] {line}"), MAX_LOG_BYTES);
+}
+
+/// 回した後のファイル名（`ferro.log`→`ferro.log.1`）。
+fn rotated_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".1");
+    PathBuf::from(name)
+}
+
+/// `path`が`max_bytes`以上なら`.1`へ回してから`line`を1行追記する。失敗は無視する
+/// （回せなくても追記は試みる）。
+fn append_line(path: &Path, line: &str, max_bytes: u64) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) else {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() >= max_bytes) {
+        // Windowsのrenameは既存の移動先を置き換える（MoveFileExのREPLACE_EXISTING）。
+        let _ = std::fs::rename(path, rotated_path(path));
+    }
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let ts = format_utc_datetime(now_unix());
-    let _ = writeln!(file, "[{ts}] {line}");
+    let _ = writeln!(file, "{line}");
 }
 
 /// `unix_seconds`をUTCの"YYYY-MM-DD HH:MM:SS"に変換する。タイムゾーンは
@@ -80,5 +105,41 @@ mod tests {
     #[test]
     fn clamps_negative_timestamps_to_the_epoch() {
         assert_eq!(format_utc_datetime(-100), "1970-01-01 00:00:00");
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn appends_without_rotating_below_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferro.log");
+        append_line(&path, "one", 100);
+        append_line(&path, "two", 100);
+        assert_eq!(read(&path), "one\ntwo\n");
+        assert!(!rotated_path(&path).exists());
+    }
+
+    #[test]
+    fn rotates_to_dot_one_once_the_limit_is_reached() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferro.log");
+        append_line(&path, "0123456789", 10); // 11バイト（改行込み）
+        append_line(&path, "next", 10);
+        assert_eq!(read(&rotated_path(&path)), "0123456789\n");
+        assert_eq!(read(&path), "next\n");
+    }
+
+    #[test]
+    fn a_second_rotation_replaces_the_old_dot_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferro.log");
+        append_line(&path, "first-generation", 10);
+        append_line(&path, "second-generation", 10);
+        append_line(&path, "third", 10);
+        assert_eq!(read(&rotated_path(&path)), "second-generation\n");
+        assert_eq!(read(&path), "third\n");
+        assert_eq!(rotated_path(&path).file_name().unwrap(), "ferro.log.1");
     }
 }
