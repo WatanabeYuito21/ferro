@@ -13,20 +13,40 @@
 //!
 //! パスワード等の秘匿情報は絶対にログへ書かない。
 //!
-//! 追記の前にファイルが`MAX_LOG_BYTES`（1MB）以上になっていれば`ferro.log.1`へ
-//! 名前を変えてから新しく書き始める（既存の`ferro.log.1`は上書きし、1世代だけ残す）。
-//! 合計で約2MBを超えて増え続けない。CLI/TUI/GUIが同時に書いても毎回
-//! open→追記→closeなので、競合しても1回余分に回すか回し損ねる程度で害は無い。
+//! ローテートは`settings.toml`の`log_max_kb`（既定1024KB。0はローテートしない）と
+//! `log_keep_files`（既定1世代）で決める。追記の前にファイルが上限以上なら
+//! `ferro.log.1`→`ferro.log.2`…と1つずつずらし、`ferro.log`を`ferro.log.1`にしてから
+//! 新しく書き始める（`log_keep_files`を超えた古いものは消す）。設定は書き込みのたびに
+//! 読み直す（ログは同期のエラー等でたまに出るだけなので負担にならず、CLI/TUI/GUIの
+//! どれから書いても、起動し直さなくても同じ設定が効く）。設定ファイルが読めなければ
+//! 既定値を使う。CLI/TUI/GUIが同時に書いても毎回open→追記→closeなので、競合しても
+//! 1回余分に回すか回し損ねる程度で害は無い。
 
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::db::now_unix;
-use crate::paths::log_path;
+use crate::paths::{log_path, settings_config_path};
+use crate::settings;
 
-/// これ以上の大きさになったら`ferro.log.1`へ回す。
-const MAX_LOG_BYTES: u64 = 1024 * 1024;
+/// ローテートの設定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rotation {
+    /// これ以上の大きさになったら回す。0は回さない。
+    max_bytes: u64,
+    /// 残す古いログの世代数。
+    keep_files: u32,
+}
+
+impl Rotation {
+    fn from_settings(s: &settings::Settings) -> Self {
+        Rotation {
+            max_bytes: (s.log_max_kb.max(0) as u64).saturating_mul(1024),
+            keep_files: s.log_keep_files.clamp(0, settings::MAX_LOG_KEEP_FILES) as u32,
+        }
+    }
+}
 
 /// 診断ログに1行追記する。書き込み失敗（ディスクフルや権限エラー等）は
 /// 無視する。
@@ -35,26 +55,54 @@ pub fn log_line(line: &str) {
     if cfg!(test) {
         return;
     }
+    let rotation = Rotation::from_settings(&settings::load_or_default(&settings_config_path()));
     let ts = format_utc_datetime(now_unix());
-    append_line(&log_path(), &format!("[{ts}] {line}"), MAX_LOG_BYTES);
+    append_line(&log_path(), &format!("[{ts}] {line}"), rotation);
 }
 
-/// 回した後のファイル名（`ferro.log`→`ferro.log.1`）。
-fn rotated_path(path: &Path) -> PathBuf {
+/// `n`世代前のログのファイル名（`ferro.log`→`ferro.log.<n>`）。
+fn rotated_path(path: &Path, n: u32) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
-    name.push(".1");
+    name.push(format!(".{n}"));
     PathBuf::from(name)
 }
 
-/// `path`が`max_bytes`以上なら`.1`へ回してから`line`を1行追記する。失敗は無視する
+/// `path`を`.1`へ回し、既存の`.1`〜は1つずつずらす。`keep_files`を超えるものは消す
+/// （設定で世代数を減らした場合に残っている分も含めて）。失敗は無視する。
+fn rotate(path: &Path, keep_files: u32) {
+    // Windowsのrenameは既存の移動先を置き換える（MoveFileExのREPLACE_EXISTING）。
+    for n in (1..keep_files).rev() {
+        let from = rotated_path(path, n);
+        if from.exists() {
+            let _ = std::fs::rename(&from, rotated_path(path, n + 1));
+        }
+    }
+    if keep_files == 0 {
+        let _ = std::fs::remove_file(path);
+    } else {
+        let _ = std::fs::rename(path, rotated_path(path, 1));
+    }
+    let mut n = keep_files + 1;
+    loop {
+        let extra = rotated_path(path, n);
+        if !extra.exists() {
+            break;
+        }
+        let _ = std::fs::remove_file(extra);
+        n += 1;
+    }
+}
+
+/// `path`が上限以上なら回してから`line`を1行追記する。失敗は無視する
 /// （回せなくても追記は試みる）。
-fn append_line(path: &Path, line: &str, max_bytes: u64) {
+fn append_line(path: &Path, line: &str, rotation: Rotation) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if std::fs::metadata(path).is_ok_and(|m| m.len() >= max_bytes) {
-        // Windowsのrenameは既存の移動先を置き換える（MoveFileExのREPLACE_EXISTING）。
-        let _ = std::fs::rename(path, rotated_path(path));
+    if rotation.max_bytes > 0
+        && std::fs::metadata(path).is_ok_and(|m| m.len() >= rotation.max_bytes)
+    {
+        rotate(path, rotation.keep_files);
     }
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
@@ -111,35 +159,98 @@ mod tests {
         std::fs::read_to_string(path).unwrap()
     }
 
+    fn rot(max_bytes: u64, keep_files: u32) -> Rotation {
+        Rotation { max_bytes, keep_files }
+    }
+
     #[test]
     fn appends_without_rotating_below_the_limit() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ferro.log");
-        append_line(&path, "one", 100);
-        append_line(&path, "two", 100);
+        append_line(&path, "one", rot(100, 1));
+        append_line(&path, "two", rot(100, 1));
         assert_eq!(read(&path), "one\ntwo\n");
-        assert!(!rotated_path(&path).exists());
+        assert!(!rotated_path(&path, 1).exists());
     }
 
     #[test]
     fn rotates_to_dot_one_once_the_limit_is_reached() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ferro.log");
-        append_line(&path, "0123456789", 10); // 11バイト（改行込み）
-        append_line(&path, "next", 10);
-        assert_eq!(read(&rotated_path(&path)), "0123456789\n");
+        append_line(&path, "0123456789", rot(10, 1)); // 11バイト（改行込み）
+        append_line(&path, "next", rot(10, 1));
+        assert_eq!(read(&rotated_path(&path, 1)), "0123456789\n");
         assert_eq!(read(&path), "next\n");
+        assert_eq!(rotated_path(&path, 1).file_name().unwrap(), "ferro.log.1");
     }
 
     #[test]
-    fn a_second_rotation_replaces_the_old_dot_one() {
+    fn a_second_rotation_replaces_the_old_dot_one_when_keeping_one() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ferro.log");
-        append_line(&path, "first-generation", 10);
-        append_line(&path, "second-generation", 10);
-        append_line(&path, "third", 10);
-        assert_eq!(read(&rotated_path(&path)), "second-generation\n");
+        for line in ["first-generation", "second-generation", "third"] {
+            append_line(&path, line, rot(10, 1));
+        }
+        assert_eq!(read(&rotated_path(&path, 1)), "second-generation\n");
         assert_eq!(read(&path), "third\n");
-        assert_eq!(rotated_path(&path).file_name().unwrap(), "ferro.log.1");
+        assert!(!rotated_path(&path, 2).exists());
+    }
+
+    #[test]
+    fn keeps_the_configured_number_of_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferro.log");
+        for line in ["gen-aaaaaa-1", "gen-aaaaaa-2", "gen-aaaaaa-3", "gen-aaaaaa-4", "now"] {
+            append_line(&path, line, rot(10, 3));
+        }
+        assert_eq!(read(&path), "now\n");
+        assert_eq!(read(&rotated_path(&path, 1)), "gen-aaaaaa-4\n");
+        assert_eq!(read(&rotated_path(&path, 2)), "gen-aaaaaa-3\n");
+        assert_eq!(read(&rotated_path(&path, 3)), "gen-aaaaaa-2\n");
+        assert!(!rotated_path(&path, 4).exists());
+    }
+
+    #[test]
+    fn reducing_the_generations_removes_the_extra_old_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferro.log");
+        for line in ["gen-aaaaaa-1", "gen-aaaaaa-2", "gen-aaaaaa-3", "gen-aaaaaa-4"] {
+            append_line(&path, line, rot(10, 3));
+        }
+        append_line(&path, "now", rot(10, 1));
+        assert_eq!(read(&rotated_path(&path, 1)), "gen-aaaaaa-4\n");
+        assert!(!rotated_path(&path, 2).exists());
+        assert!(!rotated_path(&path, 3).exists());
+    }
+
+    #[test]
+    fn keeping_zero_generations_discards_the_old_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferro.log");
+        append_line(&path, "0123456789", rot(10, 0));
+        append_line(&path, "next", rot(10, 0));
+        assert_eq!(read(&path), "next\n");
+        assert!(!rotated_path(&path, 1).exists());
+    }
+
+    #[test]
+    fn a_zero_limit_never_rotates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ferro.log");
+        append_line(&path, "0123456789", rot(0, 1));
+        append_line(&path, "next", rot(0, 1));
+        assert_eq!(read(&path), "0123456789\nnext\n");
+        assert!(!rotated_path(&path, 1).exists());
+    }
+
+    #[test]
+    fn rotation_comes_from_the_settings() {
+        let s = settings::Settings {
+            log_max_kb: 2,
+            log_keep_files: 3,
+            ..Default::default()
+        };
+        assert_eq!(Rotation::from_settings(&s), rot(2048, 3));
+        assert_eq!(Rotation::from_settings(&Default::default()), rot(1024 * 1024, 1));
     }
 }

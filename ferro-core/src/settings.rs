@@ -77,7 +77,16 @@ pub struct Settings {
     /// 一覧でメッセージを選んだだけで本文を開くか（既定はオン）。オフなら、GUIのクリック・
     /// `j`/`k`やTUIのカーソル移動では選ぶだけで、Enter（GUIは`o`・ダブルクリックも）で開く。
     pub open_on_select: bool,
+    /// 診断ログ（`ferro.log`）がこの大きさ（KB）以上になったら古い方へ回す（`logging`参照）。
+    /// 0はローテートしない（v0.0.49までと同じく追記し続ける）。
+    pub log_max_kb: i64,
+    /// 回した古いログ（`ferro.log.1`〜`ferro.log.N`）を何世代残すか。0なら回すときに捨てる。
+    /// `MAX_LOG_KEEP_FILES`までに切り詰める。
+    pub log_keep_files: i64,
 }
+
+/// `log_keep_files`の上限（手編集の桁間違いで大量のファイルを作らないように）。
+pub const MAX_LOG_KEEP_FILES: i64 = 20;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -98,6 +107,8 @@ impl Default for Settings {
             close_to_tray: false,
             show_unread_badge: true,
             open_on_select: true,
+            log_max_kb: 1024,
+            log_keep_files: 1,
         }
     }
 }
@@ -141,6 +152,13 @@ impl Settings {
         if self.server_delete_days < 0 {
             self.server_delete_days = default.server_delete_days;
         }
+        if self.log_max_kb < 0 {
+            self.log_max_kb = default.log_max_kb;
+        }
+        if self.log_keep_files < 0 {
+            self.log_keep_files = default.log_keep_files;
+        }
+        self.log_keep_files = self.log_keep_files.min(MAX_LOG_KEEP_FILES);
     }
 }
 
@@ -270,6 +288,8 @@ mod tests {
             close_to_tray: true,
             show_unread_badge: false,
             open_on_select: false,
+            log_max_kb: 0,
+            log_keep_files: 5,
         };
         save(&path, &custom).unwrap();
         assert_eq!(load(&path).unwrap(), custom);
@@ -297,6 +317,18 @@ mod tests {
         let s = load(&path).unwrap();
         assert_eq!(s.server_delete_days, 0);
         assert_eq!(s.server_delete_cutoff(), None);
+    }
+
+    #[test]
+    fn invalid_log_rotation_values_fall_back_or_are_capped() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        fs::write(&path, "log_max_kb = -1\nlog_keep_files = -3\n").unwrap();
+        let s = load(&path).unwrap();
+        assert_eq!((s.log_max_kb, s.log_keep_files), (1024, 1));
+
+        fs::write(&path, "log_keep_files = 1000\n").unwrap();
+        assert_eq!(load(&path).unwrap().log_keep_files, MAX_LOG_KEEP_FILES);
     }
 
     #[test]
