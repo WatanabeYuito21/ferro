@@ -145,6 +145,20 @@
     await save({ ...settings, server_delete_days: days })
   }
 
+  // 診断ログのローテート。0KB = ローテートしない、0世代 = 回すときに古いログを捨てる。
+  // 世代数の上限はferro_core::settings::MAX_LOG_KEEP_FILESと揃える（超えた値はRust側でも切り詰める）。
+  const MAX_LOG_KEEP_FILES = 20
+
+  async function updateLogMaxKb(kb) {
+    if (!settings || saving) return
+    await save({ ...settings, log_max_kb: kb })
+  }
+
+  async function updateLogKeepFiles(count) {
+    if (!settings || saving) return
+    await save({ ...settings, log_keep_files: count })
+  }
+
   // 通知の対象にするラベル（空なら全ての新着）。チェックを付け外しするたびに保存する。
   async function toggleNotifyLabel(name) {
     if (!settings || saving) return
@@ -339,6 +353,20 @@
         '不具合を報告する際はこのファイルの内容を添えてもらえると原因の特定に役立ちます。',
       keywords: 'log ferro.log エラー 不具合',
     },
+    logMaxKb: {
+      title: 'ログの最大サイズ（KB）',
+      desc:
+        'ログファイルがこの大きさを超えたら、古いログ（ferro.log.1）に回して新しく書き始めます。' +
+        '0にするとローテートせずに書き足し続けます。',
+      keywords: 'log rotate rotation size ローテート ローテーション サイズ 容量 上限 ferro.log',
+    },
+    logKeepFiles: {
+      title: '古いログを残す数',
+      desc:
+        `回した古いログ（ferro.log.1、.2…）を何世代残すかです（0〜${MAX_LOG_KEEP_FILES}）。` +
+        '0にすると回すときに古いログを捨てます。',
+      keywords: 'log rotate rotation generation keep ローテート ローテーション 世代 保持 ferro.log',
+    },
   }
 
   // 子コンポーネント(AccountsView等)に中身を任せているセクションは行を持たず、
@@ -369,7 +397,7 @@
       rows: ['notifyNewMail', 'notifyLabels', 'showUnreadBadge', 'closeToTray'],
     },
     update: { title: 'アップデート', keywords: 'update', rows: ['autoUpdateCheck', 'checkUpdate'] },
-    diagnostics: { title: '診断', keywords: 'diagnostics', rows: ['logFile'] },
+    diagnostics: { title: '診断', keywords: 'diagnostics', rows: ['logFile', 'logMaxKb', 'logKeepFiles'] },
     colorRules: {
       title: '色分けルール',
       keywords: 'color rules 色 ハイライト 件名 差出人 color_rules.toml',
@@ -854,6 +882,44 @@
           {#if openLogError}
             <p class="reindex-status"><span class="error">{openLogError}</span></p>
           {/if}
+        {/if}
+        {#if showRow('logMaxKb')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.logMaxKb.title}</div>
+              <div class="desc">{R.logMaxKb.desc}</div>
+            </div>
+            <input
+              type="number"
+              class="interval-select retention-input"
+              min="0"
+              step="1"
+              value={settings.log_max_kb}
+              onchange={(e) => updateLogMaxKb(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+            />
+          </div>
+        {/if}
+        {#if showRow('logKeepFiles')}
+          <div class="row">
+            <div class="text">
+              <div class="title">{R.logKeepFiles.title}</div>
+              <div class="desc">{R.logKeepFiles.desc}</div>
+            </div>
+            <input
+              type="number"
+              class="interval-select retention-input"
+              min="0"
+              max={MAX_LOG_KEEP_FILES}
+              step="1"
+              value={settings.log_keep_files}
+              onchange={(e) => {
+                const count = Math.min(MAX_LOG_KEEP_FILES, Math.max(0, Math.floor(Number(e.target.value) || 0)))
+                // 切り詰めた結果が今の値と同じだと再描画されず、入力した値が残って見えるため。
+                e.target.value = String(count)
+                updateLogKeepFiles(count)
+              }}
+            />
+          </div>
         {/if}
       </div>
     {/if}

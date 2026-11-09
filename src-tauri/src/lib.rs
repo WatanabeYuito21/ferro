@@ -731,8 +731,6 @@ struct SettingsView {
     close_to_tray: bool,
     show_unread_badge: bool,
     open_on_select: bool,
-    // 画面には出していない（settings.tomlの手編集用）が、フロントは受け取った値を
-    // そのまま送り返すので、ここに持たせておけばGUIで他の設定を保存しても消えない。
     log_max_kb: i64,
     log_keep_files: i64,
 }
