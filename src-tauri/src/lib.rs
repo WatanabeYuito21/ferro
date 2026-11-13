@@ -30,7 +30,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::image::Image;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
-use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_notification::{ActionPerformed, NotificationExt};
 
 /// 現在時刻(Unixエポック秒)。フォルダの受信箱判定(スヌーズ期限切れ)・
 /// スヌーズのプリセット計算に使う。`ferro_core::db::now_unix`は
@@ -1669,9 +1669,40 @@ fn notify_new_mail(app_handle: &AppHandle, after_id: i64) {
         return;
     }
     let (title, body) = ferro_core::new_mail::notification_text(&new_mail);
-    if let Err(e) = app_handle.notification().builder().title(title).body(body).show() {
+    let mut builder = app_handle.notification().builder().title(title).body(body);
+    // クリックされたときに開くメッセージ（1件の通知のときだけ。`on_notification_action`参照）。
+    if let Some(message_id) = ferro_core::new_mail::open_target(&new_mail) {
+        builder = builder.extra(NOTIFICATION_MESSAGE_ID_KEY, message_id);
+    }
+    if let Err(e) = builder.show() {
         logging::log_line(&format!("notify: failed to show a notification: {e}"));
     }
+}
+
+/// 通知に持たせる「クリックで開くメッセージのid」のキー（通知プラグインの`extra`）。
+const NOTIFICATION_MESSAGE_ID_KEY: &str = "message_id";
+
+#[derive(Serialize, Clone)]
+struct OpenNewMailEvent {
+    /// 本文を開くメッセージ。複数件まとめた通知では`None`（受信箱を表示するだけ）。
+    message_id: Option<i64>,
+}
+
+/// 新着通知がクリックされたら、ウィンドウを前面に出して`open-new-mail`イベントを投げる
+/// （フロントが受信箱へ移って一覧を読み直し、1件の通知ならそのメールを開く）。
+/// `run`の`setup`で通知プラグインの`on_action`に登録する。プラグインは、この登録より後に
+/// 出した通知のクリックだけを報告する。Windowsではトーストが画面に出ている間のクリックだけで、
+/// アクションセンターに移った後のクリックは報告されない（プラグインの制約）。
+fn on_notification_action(app_handle: &AppHandle, performed: &ActionPerformed) {
+    if performed.action_id() != "tap" {
+        return;
+    }
+    let message_id = performed
+        .notification()
+        .and_then(|notification| notification.extra().get(NOTIFICATION_MESSAGE_ID_KEY))
+        .and_then(|value| value.as_i64());
+    show_main_window(app_handle);
+    let _ = app_handle.emit("open-new-mail", OpenNewMailEvent { message_id });
 }
 
 /// メインウィンドウを表示して前面に出す（トレイアイコンのクリック・メニューから）。
@@ -1804,6 +1835,9 @@ pub fn run() {
             spawn_thread_backfill();
             spawn_storage_migration();
             build_tray(app)?;
+            let app_handle = app.handle().clone();
+            app.notification()
+                .on_action(move |performed| on_notification_action(&app_handle, performed))?;
             let app_handle = app.handle().clone();
             std::thread::spawn(move || update_unread_badge(&app_handle));
 

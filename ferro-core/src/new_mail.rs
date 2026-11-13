@@ -85,6 +85,12 @@ pub fn notification_text(new_mail: &NewMail) -> (String, String) {
     (format!("新着メール {}件", new_mail.count), body.join("\n"))
 }
 
+/// 通知をクリックしたときに本文を開くメッセージのid。通知が1件だけのときはそのメッセージ、
+/// 複数まとめた通知ではどれを指すか決められないので`None`（受信箱を表示するだけにする）。
+pub fn open_target(new_mail: &NewMail) -> Option<i64> {
+    if new_mail.count == 1 { new_mail.samples.first().map(|m| m.id) } else { None }
+}
+
 /// テスト用: `message_id`に`name`のラベルを付ける（無ければ作る）。
 #[cfg(test)]
 fn label(conn: &Connection, message_id: i64, name: &str) {
@@ -179,7 +185,8 @@ mod tests {
     #[test]
     fn notification_text_for_one_and_many() {
         let conn = open_in_memory().unwrap();
-        insert(&conn, "1", "first");
+        let first = insert(&conn, "1", "first");
+        assert_eq!(open_target(&since(&conn, 0, &[], 3).unwrap()), Some(first));
         assert_eq!(
             notification_text(&since(&conn, 0, &[], 3).unwrap()),
             ("Alice".to_string(), "first".to_string())
@@ -187,6 +194,7 @@ mod tests {
         for i in 2..=5 {
             insert(&conn, &i.to_string(), &format!("subject {i}"));
         }
+        assert_eq!(open_target(&since(&conn, 0, &[], 3).unwrap()), None);
         let (title, body) = notification_text(&since(&conn, 0, &[], 3).unwrap());
         assert_eq!(title, "新着メール 5件");
         assert_eq!(body, "subject 5\nsubject 4\nsubject 3\nほか2件");

@@ -841,6 +841,7 @@
   let unlistenCheckForUpdate
   let stopDailyUpdateCheck
   let unlistenRetentionPurge
+  let unlistenOpenNewMail
 
   onMount(async () => {
     try {
@@ -924,6 +925,18 @@
     unlistenRetentionPurge = await listen('retention-purge', () => {
       refreshFolderCounts()
     })
+
+    // 新着のデスクトップ通知がクリックされた（src-tauri側の`on_notification_action`）。
+    // 受信箱へ移って一覧を読み直し、1件の通知ならそのメールの本文を開く
+    // （複数件まとめた通知は`message_id`が無いので、受信箱を見せるだけ）。
+    unlistenOpenNewMail = await listen('open-new-mail', (event) => {
+      clearSearch()
+      selectFolder('inbox')
+      messageListRefreshToken += 1
+      refreshFolderCounts()
+      const id = event.payload?.message_id
+      if (id != null) openMessage(id)
+    })
   })
 
   onDestroy(() => {
@@ -933,6 +946,7 @@
     unlistenCheckForUpdate?.()
     stopDailyUpdateCheck?.()
     unlistenRetentionPurge?.()
+    unlistenOpenNewMail?.()
   })
 
   // AccountsView側のフォームからそのまま渡された値を受け取り、
